@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { get } from './utils/axios';
 import { Link } from "react-router-dom";
 import { DataGrid } from '@mui/x-data-grid';
-import { stocks, stocks80To100, stocks75To80, stocks70To75, stocks65To70 } from './constants/stock';
+import { stocks, stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70 } from './constants/stock';
 
 const Listing = () => {
     const [data, setData] = useState([]);
@@ -20,6 +20,7 @@ const Listing = () => {
         let s70To75 = stocks70To75;
         let s75To80 = stocks75To80;
         let s80To100 = stocks80To100;
+        let s80To100_2 = stocks80To100_2;
         s65To70 = s65To70.map((val) => {
             let findStock = data.find((st) => st.name === val);
             return { name: val, instrument_token: findStock?.instrument_token };
@@ -36,7 +37,11 @@ const Listing = () => {
             let findStock = data.find((st) => st.name === val);
             return { name: val, instrument_token: findStock?.instrument_token };
         });
-        localStorage.setItem('stockNames', JSON.stringify({ stocks65To70: s65To70, stocks70To75: s70To75, stocks75To80: s75To80, stocks80To100: s80To100 }));
+        s80To100_2 = s80To100_2.map((val) => {
+            let findStock = data.find((st) => st.name === val);
+            return { name: val, instrument_token: findStock?.instrument_token };
+        });
+        localStorage.setItem('stockNames', JSON.stringify({ stocks65To70: s65To70, stocks70To75: s70To75, stocks75To80: s75To80, stocks80To100: s80To100, stocks80To100_2: s80To100_2 }));
     }, [data])
 
     const columns = [
@@ -60,6 +65,7 @@ const Listing = () => {
             <Link to={`/scannerHome/2`} target="_blank">Scanner 2</Link>
             <Link to={`/scannerHome/3`} target="_blank">Scanner 3</Link>
             <Link to={`/scannerHome/4`} target="_blank">Scanner 4</Link>
+            <Link to={`/scannerHome/5`} target="_blank">Scanner 5</Link>
             <div style={{ height: 600, width: '100%' }}>
                 <DataGrid
                     rows={data}

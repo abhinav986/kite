@@ -12,43 +12,43 @@ export const firstCandleCrossBothSide = (candles) => {
     let stopLoss = 0;
     let inProgress = false;
     candles.forEach((val, index) => {
-        if(candles[0].high < val.high) {
+        if (candles[0].high < val.high) {
             highHit = true;
-            if(lowHit && !direction) {
+            if (lowHit && !direction) {
                 direction = 'up';
-                highCandle = {high: val.high, low: val.low};
+                highCandle = { high: val.high, low: val.low };
             }
         }
-        if(candles[0].low > val.low) {
+        if (candles[0].low > val.low) {
             lowHit = true;
-            if(highHit && !direction) {
+            if (highHit && !direction) {
                 direction = 'down';
-                lowCandle = {high: val.high, low: val.low};
+                lowCandle = { high: val.high, low: val.low };
             }
         }
         if (direction && !hit) {
-            if(direction === 'up' && val.high > highCandle.high && !engulfeUp) {
-                highCandle = {high: val.high, low: val.low};
+            if (direction === 'up' && val.high > highCandle.high && !engulfeUp) {
+                highCandle = { high: val.high, low: val.low };
             }
-            if(direction === 'down' && val.low < lowCandle.low && !engulfeDown) {
-                lowCandle = {high: val.high, low: val.low};
+            if (direction === 'down' && val.low < lowCandle.low && !engulfeDown) {
+                lowCandle = { high: val.high, low: val.low };
             }
 
-            if(direction === 'up' && highCandle.low > val.low) {
+            if (direction === 'up' && highCandle.low > val.low) {
                 engulfeUp = true;
                 inProgress = true;
             }
-            if(direction === 'down' && lowCandle.high < val.high) {
+            if (direction === 'down' && lowCandle.high < val.high) {
                 engulfeDown = true;
                 inProgress = true;
                 console.log("here");
             }
 
-            if(engulfeUp && highCandle.high < val.high && index < 21) {
+            if (engulfeUp && highCandle.high < val.high && index < 21) {
                 hit = true;
                 buyOrSellPrice = highCandle.high;
             }
-            if(engulfeDown && lowCandle.low > val.low && index < 21) {
+            if (engulfeDown && lowCandle.low > val.low && index < 21) {
                 hit = true;
                 buyOrSellPrice = lowCandle.low;
             }
@@ -87,12 +87,12 @@ export const engulfe = (candles) => {
         } else {
             if (!hit) {
                 if (upCrossArr[upCrossArr.length - 1].high < val.high && !engulfeUp) {
-                    if(upCrossArr[upCrossArr.length - 1].low > val.low) {
+                    if (upCrossArr[upCrossArr.length - 1].low > val.low) {
                         upCrossArr.pop();
                     }
                     upCrossArr.push({ high: val.high, low: val.low });
                 } else if (lowCrossArr[lowCrossArr.length - 1].low > val.low && !engulfeDown) {
-                    if(lowCrossArr[lowCrossArr.length - 1].high < val.high) {
+                    if (lowCrossArr[lowCrossArr.length - 1].high < val.high) {
                         lowCrossArr.pop();
                     }
                     lowCrossArr.push({ high: val.high, low: val.low });
@@ -151,51 +151,37 @@ export const engulfe = (candles) => {
 
 export const fourInsideOne = (candles) => {
     let match = [];
-    let lowHit = 0;
-    let upperHit = 0;
     let direction;
     let hit = false;
     let buyOrSellPrice = 0;
-    let previousLow = 0;
-    let previousHigh = 0;
     let stopLoss = 0;
     let inProgress = false;
+    let isSucess = true;
     candles.forEach((val) => {
         if (match.length === 0) {
             match.push(val);
         } else {
-            if (match[0].high > val.high && match[0].low < val.low) {
+            if (match[0].high > val.high && match[0].low < val.low && isSucess) {
                 if (match.length !== 5) {
                     match.push(val);
                 }
             } else {
-                if (match.length !== 5) {
+                if (match.length !== 5 && isSucess) {
                     match = [];
-                    match.push(val);
+                    isSucess = false;
                 }
             }
         }
         if (match.length === 5) {
-            if (lowHit !== 2 && upperHit !== 2) {
-                if ((previousHigh || match[0].high) < val.high) {
-                    if (upperHit === 1 && lowHit === 0) {
-                        direction = 'up';
-                        hit = true;
-                        buyOrSellPrice = previousHigh;
-                    }
-                    previousHigh = val.high;
-                    upperHit = upperHit + 1;
-                    inProgress = true;
-                } else if ((previousLow || match[0].low) > val.low) {
-                    if (lowHit === 1 && upperHit === 0) {
-                        direction = 'low';
-                        hit = true;
-                        buyOrSellPrice = previousLow;
-                    }
-                    previousLow = val.low;
-                    lowHit = lowHit + 1;
-                    inProgress = true;
-                }
+            inProgress = true;
+            if (match[0].high < val.high) {
+                direction = 'up';
+                hit = true;
+                buyOrSellPrice = match[0].high;
+            } else if (match[0].low > val.low) {
+                direction = 'low';
+                hit = true;
+                buyOrSellPrice = match[0].low;
             }
         }
         if (hit) {
@@ -214,7 +200,7 @@ export const fourInsideOne = (candles) => {
         profitOrLoss: direction === 'up' ? Math.floor(target - buyOrSellPrice) : Math.floor(buyOrSellPrice - target),
         direction: direction,
         // match: match,
-        time: match[0].date,
+        time: match[0]?.date,
         hit: hit,
         inProgress: inProgress,
     };

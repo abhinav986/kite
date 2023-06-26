@@ -59,6 +59,8 @@ const ScannerHome = () => {
         stockList = stockNames?.stocks75To80;
     } else if (id == 4) {
         stockList = stockNames?.stocks80To100;
+    } else if (id == 5) {
+        stockList = stockNames?.stocks80To100_2;
     }
 
     useEffect(() => {

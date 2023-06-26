@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { DataGrid } from '@mui/x-data-grid';
-import { stocks65To70, stocks70To75, stocks75To80, stocks80To100 } from '../constants/stock';
+import { stocks65To70, stocks70To75, stocks75To80, stocks80To100, stocks80To100_2, stocks70To75_2 } from '../constants/stock';
 
 const columns = [
     {
@@ -39,7 +39,7 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
     const [result, setResult] = useState([]);
     const [sumResult, setSumResult] = useState(0);
 
-    let stock = [...stocks65To70, ...stocks70To75, ...stocks75To80, ...stocks80To100];
+    let stock = [...stocks65To70, ...stocks70To75, ...stocks75To80, ...stocks80To100, ...stocks80To100_2, ...stocks70To75_2];
     let storageAnalysis = localStorage?.getItem('analysis');
     if (!storageAnalysis) {
         localStorage?.setItem('analysis', JSON.stringify({}));
