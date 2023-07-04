@@ -11,6 +11,8 @@ export const firstCandleCrossBothSide = (candles) => {
     let buyOrSellPrice;
     let stopLoss = 0;
     let inProgress = false;
+    let stoplossPriceDown = 0;
+    let stoplossPriceUp = 0;
     candles.forEach((val, index) => {
         if (candles[0].high < val.high) {
             highHit = true;
@@ -34,14 +36,15 @@ export const firstCandleCrossBothSide = (candles) => {
                 lowCandle = { high: val.high, low: val.low };
             }
 
-            if (direction === 'up' && highCandle.low > val.low) {
+            if (direction === 'up' && highCandle.low > val.low && !hit) {
                 engulfeUp = true;
                 inProgress = true;
+                stoplossPriceUp = val.low;
             }
-            if (direction === 'down' && lowCandle.high < val.high) {
+            if (direction === 'down' && lowCandle.high < val.high && !hit) {
                 engulfeDown = true;
                 inProgress = true;
-                console.log("here");
+                stoplossPriceDown = val.high;
             }
 
             if (engulfeUp && highCandle.high < val.high && index < 21) {
@@ -51,6 +54,13 @@ export const firstCandleCrossBothSide = (candles) => {
             if (engulfeDown && lowCandle.low > val.low && index < 21) {
                 hit = true;
                 buyOrSellPrice = lowCandle.low;
+            }
+        }
+        if(hit) {
+            if (direction === 'up' && val.low < stoplossPriceUp) {
+                stopLoss = stoplossPriceUp;
+            } else if (direction === 'down' && val.high > stoplossPriceDown) {
+                stopLoss = stoplossPriceDown;
             }
         }
     });
@@ -79,6 +89,8 @@ export const engulfe = (candles) => {
     let stopLoss = 0;
     let direction;
     let inProgress = false;
+    let stoplossPriceDown = 0;
+    let stoplossPriceUp = 0;
 
     candles.forEach((val, index) => {
         if (!upCrossArr.length && !lowCrossArr.length) {
@@ -98,10 +110,12 @@ export const engulfe = (candles) => {
                     lowCrossArr.push({ high: val.high, low: val.low });
                 }
 
-                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 2].low > val.low) {
+                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 2].low > val.low && !hit) {
                     engulfeUp = true;
-                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 2].high < val.high) {
+                    stoplossPriceUp = val.low;
+                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 2].high < val.high && !hit) {
                     engulfeDown = true;
+                    stoplossPriceDown = val.high;
                 }
 
                 if (engulfeUp && !upFirstCross) {
@@ -117,21 +131,21 @@ export const engulfe = (candles) => {
                     }
                 }
 
-                if (upFirstCross && upFirstCross < val.high && index < 21) {
+                if (upFirstCross && upFirstCross < val.high && index < 21 && !hit) {
                     hit = true;
                     buyOrSellPrice = upFirstCross;
                     direction = 'up';
                 }
-                if (lowFirstCross && lowFirstCross > val.low && index < 21) {
+                if (lowFirstCross && lowFirstCross > val.low && index < 21  && !hit) {
                     hit = true;
                     buyOrSellPrice = lowFirstCross;
                     direction = 'down'
                 }
             } else {
-                if (direction === 'up' && val.low < lowCrossArr[lowCrossArr.length - 1].low) {
-                    stopLoss = lowCrossArr[lowCrossArr.length - 1].low;
-                } else if (direction === 'down' && val.high > upCrossArr[upCrossArr.length - 1].high) {
-                    stopLoss = upCrossArr[upCrossArr.length - 1].high;
+                if (direction === 'up' && val.low < stoplossPriceUp) {
+                    stopLoss = stoplossPriceUp;
+                } else if (direction === 'down' && val.high > stoplossPriceDown) {
+                    stopLoss = stoplossPriceDown;
                 }
             }
         }
@@ -157,7 +171,7 @@ export const fourInsideOne = (candles) => {
     let stopLoss = 0;
     let inProgress = false;
     let isSucess = true;
-    candles.forEach((val) => {
+    candles.forEach((val, index) => {
         if (match.length === 0) {
             match.push(val);
         } else {
@@ -174,11 +188,11 @@ export const fourInsideOne = (candles) => {
         }
         if (match.length === 5) {
             inProgress = true;
-            if (match[0].high < val.high) {
+            if (match[0].high < val.high && !hit) {
                 direction = 'up';
                 hit = true;
                 buyOrSellPrice = match[0].high;
-            } else if (match[0].low > val.low) {
+            } else if (match[0].low > val.low && !hit) {
                 direction = 'low';
                 hit = true;
                 buyOrSellPrice = match[0].low;
@@ -193,7 +207,7 @@ export const fourInsideOne = (candles) => {
         }
     });
 
-    const target = direction === 'up' ? stopLoss || candles[candles.length - 1].high : stopLoss || candles[candles.length - 1]?.low;
+    const target = direction === 'up' ? (stopLoss || candles[candles.length - 1].high) : (stopLoss || candles[candles.length - 1]?.low);
     return {
         buyOrSellPrice: buyOrSellPrice,
         target: target,
@@ -218,6 +232,8 @@ export const firstCross = (candles) => {
     let stopLoss = 0;
     let direction;
     let inProgress = false;
+    let stoplossPriceDown = 0;
+    let stoplossPriceUp = 0;
     candles.forEach((val) => {
         if (!upCrossArr.length && !lowCrossArr.length) {
             upCrossArr.push({ high: val.high, low: val.low });
@@ -230,23 +246,13 @@ export const firstCross = (candles) => {
                     lowCrossArr.push({ high: val.high, low: val.low });
                 }
 
-                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 1].low > val.low) {
+                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 1].low > val.low && !hit) {
                     engulfeUp = true;
-                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 1].high < val.high) {
+                    stoplossPriceUp = val.low;
+                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 1].high < val.high && !hit) {
                     engulfeDown = true;
+                    stoplossPriceDown = val.high;
                 }
-
-                //empty array if candle crossed it
-                // if (upCrossArr[0]?.low > val.low) {
-                //     upCrossArr = [{ high: val.high, low: val.low }];
-                //     engulfeUp = false;
-                //     upFirstCross = undefined;
-                // }
-                // if (lowCrossArr[0]?.high < val.high) {
-                //     lowCrossArr = [{ high: val.high, low: val.low }];
-                //     engulfeDown = false;
-                //     lowFirstCross = undefined;
-                // }
 
                 if (engulfeUp && !upFirstCross) {
                     if (upCrossArr[upCrossArr.length - 1].high < val.high) {
@@ -261,15 +267,21 @@ export const firstCross = (candles) => {
                     }
                 }
 
-                if (upFirstCross && upFirstCross < val.high) {
+                if (upFirstCross && upFirstCross < val.high && !hit) {
                     hit = true;
                     buyOrSellPrice = upFirstCross;
                     direction = 'up';
                 }
-                if (lowFirstCross && lowFirstCross > val.low) {
+                if (lowFirstCross && lowFirstCross > val.low && !hit) {
                     hit = true;
                     buyOrSellPrice = lowFirstCross;
                     direction = 'down'
+                }
+            } else {
+                if (direction === 'up' && val.low < stoplossPriceUp) {
+                    stopLoss = stoplossPriceUp;
+                } else if (direction === 'down' && val.high > stoplossPriceDown) {
+                    stopLoss = stoplossPriceDown;
                 }
             }
         }

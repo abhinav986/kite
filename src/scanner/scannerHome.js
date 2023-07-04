@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { get } from '../utils/axios';
 import { gapOpen, fourInsideOne, firstCandleCrossBothSide, engulfe } from '../utils/analysis';
+import { engulfeFirst } from '../utils/analysis2';
+
 import { DataGrid } from '@mui/x-data-grid';
 import { Link, useParams } from "react-router-dom";
 
@@ -61,10 +63,12 @@ const ScannerHome = () => {
         stockList = stockNames?.stocks80To100;
     } else if (id == 5) {
         stockList = stockNames?.stocks80To100_2;
+    } else if (id == 6) {
+        stockList = stockNames?.stocks70To75_2;
     }
 
     useEffect(() => {
-        stockList = stockList.map((val) => get(`historyData/intraday/?id=${val.instrument_token}`).then(r => ({ name: val.name, result: r, instrument_token: val.instrument_token })));
+        stockList = stockList.filter((val) => val.instrument_token).map((val) => get(`historyData/intraday/?id=${val.instrument_token}`).then(r => ({ name: val.name, result: r, instrument_token: val.instrument_token })));
         Promise.allSettled(stockList).then((res) => {
             setData(res);
         });
@@ -155,7 +159,7 @@ const ScannerHome = () => {
                 />
             </div>
             <div>
-                <h6>First Cross</h6>
+                <h6>Cross Both Side</h6>
                 <DataGrid
                     style={{ height: 400 }}
                     rows={[...tracker.firstCross]}
