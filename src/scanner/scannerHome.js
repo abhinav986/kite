@@ -85,6 +85,7 @@ const ScannerHome = () => {
                 let candles = st?.value?.result?.data;
                 let date = candles[0]?.date?.split('T');
                 let filterData = candles.filter((candle) => candle.date.includes(date[0]));
+                let previousDayCandles = candles.splice(0, filterData.length);
                 let category = getCategory(st?.value?.name);
                 if (candles.length) {
                     let res = engulfe(candles);
@@ -92,7 +93,7 @@ const ScannerHome = () => {
                         engulfeArr.push({ id: engulfeArr.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...res });
                     }
 
-                    let resGap = gapOpen(candles);
+                    let resGap = gapOpen(candles, previousDayCandles);
                     if (Boolean(resGap.inProgress) && category.includes('Gap Open total') || category.length === 0) {
                         gap.push({ id: gap.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resGap });
                     }
@@ -102,7 +103,7 @@ const ScannerHome = () => {
                         firstCros.push({ id: firstCros.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resFirstCross });
                     }
 
-                    let resInside = fourInsideOne(candles, previousDayCandles);
+                    let resInside = fourInsideOne(candles);
                     if (Boolean(resInside.inProgress) && category.includes('Four Inside one total') || category.length === 0) {
                         oneInsideOther.push({ id: oneInsideOther.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resInside });
                     }
