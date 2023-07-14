@@ -186,7 +186,7 @@ export const fourInsideOne = (candles) => {
                 }
             }
         }
-        if (match.length === 5) {
+        if (match.length === 5 && index < 10) {
             inProgress = true;
             if (match[0].high < val.high && !hit) {
                 direction = 'up';
@@ -311,7 +311,7 @@ export const gapOpen = (candles, lasDayCandles) => {
 const getHighAndLow = (candles) => {
     let high = 0;
     let low = 0;
-    candles.forEach((val) => {
+    candles?.forEach((val) => {
         if (high < val.high) {
             high = val.high;
         } else if (low > val.low) {

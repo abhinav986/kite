@@ -12,6 +12,7 @@
     "@testing-library/user-event": "^13.5.0",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
+    "cross-env": "^7.0.3",
     "http-proxy-middleware": "^2.0.6",
     "kiteconnect": "^4.1.0",
     "querystring-es3": "^0.2.1",
@@ -22,7 +23,7 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "react-scripts --openssl-legacy-provider  start",
+    "start": "cross-env PORT=8080 react-scripts --openssl-legacy-provider  start",
     "build": "GENERATE_SOURCEMAP=false react-scripts --openssl-legacy-provider build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
