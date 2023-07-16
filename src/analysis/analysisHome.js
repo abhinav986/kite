@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { get } from '../utils/axios';
 import { useParams } from 'react-router-dom';
 import AnalyticsSingle from './analysisSingle';
-import { gapOpen, engulfe, fourInsideOne, firstCandleCrossBothSide } from '../utils/analysis';
+import { gapOpen, engulfe, firstCross, fourInsideOne, firstCandleCrossBothSide } from '../utils/analysis';
 import AnalyticsGap from './analyticsGap';
 
 const AnalyticsHome = () => {
@@ -37,7 +37,7 @@ const AnalyticsHome = () => {
                 <AnalyticsSingle
                     data={[...data]}
                     name={name}
-                    analysisFunction={firstCandleCrossBothSide}
+                    analysisFunction={firstCross}
                     label='First Cross total' />
             </div>
         </div>

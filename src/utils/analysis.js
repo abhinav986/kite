@@ -77,7 +77,9 @@ export const firstCandleCrossBothSide = (candles) => {
     };
 }
 
-export const engulfe = (candles) => {
+export const engulfe = (candles, previousDayCandles) => {
+    let lastFiveCandle = previousDayCandles?.slice(19, 24);
+    const { lastDayHigh, lastDayLow } = getHighAndLow(lastFiveCandle);
     let upCrossArr = [];
     let lowCrossArr = [];
     let engulfeUp = false;
@@ -91,13 +93,14 @@ export const engulfe = (candles) => {
     let inProgress = false;
     let stoplossPriceDown = 0;
     let stoplossPriceUp = 0;
+    let isSucess = true;
 
     candles.forEach((val, index) => {
         if (!upCrossArr.length && !lowCrossArr.length) {
             upCrossArr.push({ high: val.high, low: val.low });
             lowCrossArr.push({ high: val.high, low: val.low });
         } else {
-            if (!hit) {
+            if (!hit && isSucess) {
                 if (upCrossArr[upCrossArr.length - 1].high < val.high && !engulfeUp) {
                     if (upCrossArr[upCrossArr.length - 1].low > val.low) {
                         upCrossArr.pop();
@@ -113,9 +116,15 @@ export const engulfe = (candles) => {
                 if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 2].low > val.low && !hit) {
                     engulfeUp = true;
                     stoplossPriceUp = val.low;
+                    if(((upCrossArr[upCrossArr.length - 1].high - lastDayLow)/upCrossArr[upCrossArr.length - 1].high)*100 > 1.75) {
+                        isSucess = false;
+                    }
                 } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 2].high < val.high && !hit) {
                     engulfeDown = true;
                     stoplossPriceDown = val.high;
+                    if(((lastDayHigh - lowCrossArr[lowCrossArr.length - 1].low)/lowCrossArr[lowCrossArr.length - 1].low)*100 > 1.75) {
+                        isSucess = false;
+                    }
                 }
 
                 if (engulfeUp && !upFirstCross) {
@@ -163,7 +172,9 @@ export const engulfe = (candles) => {
     };
 }
 
-export const fourInsideOne = (candles) => {
+export const fourInsideOne = (candles, previousDayCandles) => {
+    let lastFiveCandle = previousDayCandles?.slice(19, 24);
+    const { lastDayHigh, lastDayLow } = getHighAndLow(lastFiveCandle);
     let match = [];
     let direction;
     let hit = false;
@@ -174,7 +185,7 @@ export const fourInsideOne = (candles) => {
     candles.forEach((val, index) => {
         if (match.length === 0) {
             match.push(val);
-        } else {
+        } else if(isSucess) {
             if (match[0].high > val.high && match[0].low < val.low && isSucess) {
                 if (match.length !== 5) {
                     match.push(val);
@@ -186,16 +197,24 @@ export const fourInsideOne = (candles) => {
                 }
             }
         }
-        if (match.length === 5 && index < 10) {
+        if (match.length === 5 && index < 20) {
             inProgress = true;
             if (match[0].high < val.high && !hit) {
-                direction = 'up';
-                hit = true;
-                buyOrSellPrice = match[0].high;
+                if(((match[0]?.high - lastDayLow)/match[0]?.high)*100 > 1.75) {
+                    isSucess = false;
+                } else {
+                    direction = 'up';
+                    hit = true;
+                    buyOrSellPrice = match[0].high;
+                }
             } else if (match[0].low > val.low && !hit) {
-                direction = 'low';
-                hit = true;
-                buyOrSellPrice = match[0].low;
+                if(((lastDayHigh - match[0]?.low)/match[0]?.low)*100 > 1.75) {
+                    isSucess = false;
+                } else {
+                    direction = 'low';
+                    hit = true;
+                    buyOrSellPrice = match[0].low;
+                }
             }
         }
         if (hit) {
@@ -220,7 +239,9 @@ export const fourInsideOne = (candles) => {
     };
 }
 
-export const firstCross = (candles) => {
+export const firstCross = (candles, previousDayCandles) => {
+    let lastFiveCandle = previousDayCandles?.slice(19, 25);
+    const { lastDayHigh, lastDayLow } = getHighAndLow(lastFiveCandle);
     let upCrossArr = [];
     let lowCrossArr = [];
     let engulfeUp = false;
@@ -234,59 +255,75 @@ export const firstCross = (candles) => {
     let inProgress = false;
     let stoplossPriceDown = 0;
     let stoplossPriceUp = 0;
-    candles.forEach((val) => {
+    let isSucess = true;
+    candles.forEach((val, index) => {
         if (!upCrossArr.length && !lowCrossArr.length) {
             upCrossArr.push({ high: val.high, low: val.low });
             lowCrossArr.push({ high: val.high, low: val.low });
         } else {
-            if (!hit) {
+            if (!hit && isSucess && index < 16) {
                 if (upCrossArr[upCrossArr.length - 1]?.high < val.high && !engulfeUp) {
                     upCrossArr.push({ high: val.high, low: val.low });
                 } else if (lowCrossArr[lowCrossArr.length - 1]?.low > val.low && !engulfeDown) {
                     lowCrossArr.push({ high: val.high, low: val.low });
                 }
 
-                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 1].low > val.low && !hit) {
+                if (upCrossArr.length >= 2 && upCrossArr[upCrossArr.length - 1].low > val.low && !hit && !upFirstCross) {
+                    upFirstCross = val;
+                    console.log(lastFiveCandle);
+                    console.log(val);
+                    if(((upCrossArr[upCrossArr.length - 1].high - lastDayLow)/upCrossArr[upCrossArr.length - 1].high)*100 > 1.75) {
+                        isSucess = false;
+                    }
+                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 1].high < val.high && !hit && !lowFirstCross) {
+                    if(((lastDayHigh - lowCrossArr[lowCrossArr.length - 1].low)/lowCrossArr[lowCrossArr.length - 1].low)*100 > 1.75) {
+                        isSucess = false;
+                    }
+                    lowFirstCross = val;
+                }
+
+                //remove first cross if val paased that without making 2 cross
+                // if(upFirstCross && !engulfeUp && val.high >= upCrossArr[upCrossArr.length - 1].high) {
+                //     upFirstCross = undefined;
+                // } else if(lowFirstCross && !engulfeDown && val.low <= lowCrossArr[lowCrossArr.length -1].low){
+                //     lowFirstCross = undefined;
+                // }
+                if(upFirstCross && upFirstCross.low > val.low) {
                     engulfeUp = true;
                     stoplossPriceUp = val.low;
-                } else if (lowCrossArr.length >= 2 && lowCrossArr[lowCrossArr.length - 1].high < val.high && !hit) {
+                    inProgress = true;
+                    if(upCrossArr[0].low > val.low) {
+                        isSucess = false;
+                    }
+                } else if(lowFirstCross && lowFirstCross.high < val.high) {
                     engulfeDown = true;
                     stoplossPriceDown = val.high;
-                }
-
-                if (engulfeUp && !upFirstCross) {
-                    if (upCrossArr[upCrossArr.length - 1].high < val.high) {
-                        upFirstCross = val.high;
-                        inProgress = true;
-                    }
-                }
-                if (engulfeDown && !lowFirstCross) {
-                    if (lowCrossArr[lowCrossArr.length - 1].low > val.low) {
-                        lowFirstCross = val.low;
-                        inProgress = true;
+                    inProgress = true;
+                    if(lowCrossArr[0].high < val.high) {
+                        isSucess = false;
                     }
                 }
 
-                if (upFirstCross && upFirstCross < val.high && !hit) {
+                if (engulfeUp && inProgress && upCrossArr[upCrossArr.length -1].high < val.high && !hit) {
                     hit = true;
-                    buyOrSellPrice = upFirstCross;
+                    buyOrSellPrice = upCrossArr[upCrossArr.length -1].high;
                     direction = 'up';
                 }
-                if (lowFirstCross && lowFirstCross > val.low && !hit) {
+                if (engulfeDown && inProgress && lowCrossArr[lowCrossArr.length -1].low >  val.low && !hit) {
                     hit = true;
-                    buyOrSellPrice = lowFirstCross;
+                    buyOrSellPrice = lowCrossArr[lowCrossArr.length -1].low;
                     direction = 'down'
                 }
             } else {
-                if (direction === 'up' && val.low < stoplossPriceUp) {
-                    stopLoss = stoplossPriceUp;
-                } else if (direction === 'down' && val.high > stoplossPriceDown) {
-                    stopLoss = stoplossPriceDown;
-                }
+                // if (direction === 'up' && val.low < stoplossPriceUp) {
+                //     stopLoss = stoplossPriceUp;
+                // } else if (direction === 'down' && val.high > stoplossPriceDown) {
+                //     stopLoss = stoplossPriceDown;
+                // }
             }
         }
     })
-    const target = direction === 'up' ? stopLoss || candles[candles.length - 1].high : stopLoss || candles[candles.length - 1]?.low;
+    const target = direction === 'up' ? stopLoss || candles[candles.length - 2].high : stopLoss || candles[candles.length - 2]?.low;
     return {
         buyOrSellPrice: buyOrSellPrice,
         target: target,
@@ -302,7 +339,7 @@ export const firstCross = (candles) => {
 export const gapOpen = (candles, lasDayCandles) => {
     const { lastDayHigh, lastDayLow } = getHighAndLow(lasDayCandles);
     if (lastDayHigh < candles[0]?.open || lastDayLow > candles[0]?.open) {
-        let result = firstCross(candles);
+        let result = firstCross(candles, lasDayCandles);
         return result;
     }
     return { hit: false, inProgress: false };
@@ -310,12 +347,12 @@ export const gapOpen = (candles, lasDayCandles) => {
 
 const getHighAndLow = (candles) => {
     let high = 0;
-    let low = 0;
+    let low = candles?.[0]?.low;
     candles?.forEach((val) => {
         if (high < val.high) {
             high = val.high;
         } else if (low > val.low) {
-            low = low;
+            low = val.low;
         }
     });
     return { lastDayHigh: high, lastDayLow: low };

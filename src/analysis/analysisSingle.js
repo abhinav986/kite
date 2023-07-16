@@ -55,16 +55,18 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
     useEffect(() => {
         let tmpData = data;
         let resultsArray = [];
+        let previousDayCandles = [];
         while (tmpData.length > 0) {
             let date = tmpData[0]?.date?.split('T');
             let filterData = tmpData.filter((candle) => candle.date.includes(date[0]));
             let dataToAnalys = tmpData.splice(0, filterData.length);
             if (dataToAnalys.length) {
-                const ana = analysisFunction(dataToAnalys);
+                const ana = analysisFunction(dataToAnalys, previousDayCandles);
                 if (ana.hit === true) {
                     resultsArray.push({ ...ana, id: resultsArray.length + 1 });
                 }
             }
+            previousDayCandles = dataToAnalys;
         }
         setResult(resultsArray);
     }, [data]);

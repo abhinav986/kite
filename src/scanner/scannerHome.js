@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { get } from '../utils/axios';
-import { gapOpen, fourInsideOne, firstCandleCrossBothSide, engulfe } from '../utils/analysis';
+import { gapOpen, fourInsideOne, firstCandleCrossBothSide, engulfe, firstCross } from '../utils/analysis';
 import { engulfeFirst } from '../utils/analysis2';
 
 import { DataGrid } from '@mui/x-data-grid';
@@ -88,7 +88,7 @@ const ScannerHome = () => {
                 let previousDayCandles = candles.splice(0, filterData.length);
                 let category = getCategory(st?.value?.name);
                 if (candles.length) {
-                    let res = engulfe(candles);
+                    let res = engulfe(candles, previousDayCandles);
                     if (res.inProgress && category.includes('Engulfe total') || category.length === 0) {
                         engulfeArr.push({ id: engulfeArr.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...res });
                     }
@@ -98,12 +98,12 @@ const ScannerHome = () => {
                         gap.push({ id: gap.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resGap });
                     }
 
-                    let resFirstCross = firstCandleCrossBothSide(candles);
+                    let resFirstCross = firstCross(candles, previousDayCandles);
                     if (Boolean(resFirstCross.inProgress) && category.includes('First Cross total') || category.length === 0) {
                         firstCros.push({ id: firstCros.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resFirstCross });
                     }
 
-                    let resInside = fourInsideOne(candles);
+                    let resInside = fourInsideOne(candles, previousDayCandles);
                     if (Boolean(resInside.inProgress) && category.includes('Four Inside one total') || category.length === 0) {
                         oneInsideOther.push({ id: oneInsideOther.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resInside });
                     }
