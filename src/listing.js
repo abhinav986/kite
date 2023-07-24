@@ -8,7 +8,7 @@ const Listing = () => {
     const [data, setData] = useState([]);
 
     useEffect(() => {
-        let stocks = [...stocks65To70, ...stocks70To75, ...stocks75To80, ...stocks80To100, ...stocks80To100_2, ...stocks70To75_2];
+        let stock = [...stocks65To70, ...stocks70To75, ...stocks75To80, ...stocks80To100, ...stocks80To100_2, ...stocks70To75_2];
         get('instruments').then((res) => {
             let filterData = res.data.filter((val) => val.segment === 'NSE' && val.instrument_type === 'EQ' && val.name);
             filterData = filterData.map((val) => ({ ...val, id: val.instrument_token }));

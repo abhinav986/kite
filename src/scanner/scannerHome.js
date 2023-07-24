@@ -89,22 +89,22 @@ const ScannerHome = () => {
                 let category = getCategory(st?.value?.name);
                 if (candles.length) {
                     let res = engulfe(candles, previousDayCandles);
-                    if (res.inProgress && category.includes('Engulfe total') || category.length === 0) {
+                    if (res.inProgress && res.isSucess && category.includes('Engulfe total') || category.length === 0) {
                         engulfeArr.push({ id: engulfeArr.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...res });
                     }
 
                     let resGap = gapOpen(candles, previousDayCandles);
-                    if (Boolean(resGap.inProgress) && category.includes('Gap Open total') || category.length === 0) {
+                    if (Boolean(resGap.inProgress) && res.isSucess && category.includes('Gap Open total') || category.length === 0) {
                         gap.push({ id: gap.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resGap });
                     }
 
                     let resFirstCross = firstCross(candles, previousDayCandles);
-                    if (Boolean(resFirstCross.inProgress) && category.includes('First Cross total') || category.length === 0) {
+                    if (Boolean(resFirstCross.inProgress) && res.isSucess && category.includes('First Cross total') || category.length === 0) {
                         firstCros.push({ id: firstCros.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resFirstCross });
                     }
 
                     let resInside = fourInsideOne(candles, previousDayCandles);
-                    if (Boolean(resInside.inProgress) && category.includes('Four Inside one total') || category.length === 0) {
+                    if (Boolean(resInside.hit) && category.includes('Four Inside one total') || category.length === 0) {
                         oneInsideOther.push({ id: oneInsideOther.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resInside });
                     }
                 }
@@ -124,7 +124,7 @@ const ScannerHome = () => {
         if (data) {
             let keys = Object.keys(data);
             keys.forEach((val) => {
-                if (data[val] > 65) {
+                if (data[val] >= 50) {
                     category.push(val);
                 }
             });

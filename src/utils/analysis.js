@@ -169,6 +169,7 @@ export const engulfe = (candles, previousDayCandles) => {
         time: candles[0].date,
         hit: hit,
         inProgress: inProgress,
+        isSucess: isSucess,
     };
 }
 
@@ -236,6 +237,7 @@ export const fourInsideOne = (candles, previousDayCandles) => {
         time: match[0]?.date,
         hit: hit,
         inProgress: inProgress,
+        isSucess: isSucess,
     };
 }
 
@@ -333,6 +335,7 @@ export const firstCross = (candles, previousDayCandles) => {
         time: candles[0].date,
         hit: hit,
         inProgress: inProgress,
+        isSucess: isSucess,
     };
 }
 
