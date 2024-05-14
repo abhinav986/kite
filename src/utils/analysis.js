@@ -341,22 +341,23 @@ export const firstCross = (candles, previousDayCandles) => {
 
 export const gapOpen = (candles, lasDayCandles) => {
     const { lastDayHigh, lastDayLow } = getHighAndLow(lasDayCandles);
-    if (lastDayHigh < candles[0]?.open || lastDayLow > candles[0]?.open) {
-        let result = firstCross(candles, lasDayCandles);
-        return result;
+    if ((lastDayHigh < candles[0]?.high && lastDayHigh < candles[0]?.low) || (lastDayLow > candles[0]?.high && lastDayLow > candles[0]?.low)) {
+        // let result = firstCross(candles, lasDayCandles);
+        return { hit: false, inProgress: true };
     }
     return { hit: false, inProgress: false };
 }
 
 const getHighAndLow = (candles) => {
-    let high = 0;
-    let low = candles?.[0]?.low;
-    candles?.forEach((val) => {
-        if (high < val.high) {
-            high = val.high;
-        } else if (low > val.low) {
-            low = val.low;
-        }
-    });
+    let high = candles?.[candles.length-1]?.high;
+    let low = candles?.[candles.length-1]?.low;
+    console.log(candles);
+    // candles?.forEach((val) => {
+    //     if (high < val.high) {
+    //         high = val.high;
+    //     } else if (low > val.low) {
+    //         low = val.low;
+    //     }
+    // });
     return { lastDayHigh: high, lastDayLow: low };
 }

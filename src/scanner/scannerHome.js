@@ -94,7 +94,7 @@ const ScannerHome = () => {
                     }
 
                     let resGap = gapOpen(candles, previousDayCandles);
-                    if (Boolean(resGap.inProgress) && res.isSucess && category.includes('Gap Open total') || category.length === 0) {
+                    if (Boolean(resGap.inProgress)) {
                         gap.push({ id: gap.length + 1, name: st?.value?.name, instrument_token: st?.value?.instrument_token, ...resGap });
                     }
 
@@ -137,20 +137,20 @@ const ScannerHome = () => {
             <div>
                 <h6>Gap</h6>
                 <DataGrid
-                    style={{ height: 400 }}
+                    style={{ height: 700 }}
                     rows={[...tracker.gap]}
                     columns={columns}
                 />
             </div>
-            <div>
+            {/* <div>
                 <h6>Engulfe</h6>
                 <DataGrid
                     style={{ height: 400 }}
                     rows={[...tracker.engulfe]}
                     columns={columns}
                 />
-            </div>
-            <div>
+            </div> */}
+            {/* <div>
                 <h6>One Inside Other</h6>
                 <DataGrid
                     style={{ height: 400 }}
@@ -165,7 +165,7 @@ const ScannerHome = () => {
                     rows={[...tracker.firstCross]}
                     columns={columns}
                 />
-            </div>
+            </div> */}
         </div>
     )
 }
