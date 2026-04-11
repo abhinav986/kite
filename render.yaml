@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: kite-backend
+    runtime: node
+    rootDir: .
+    buildCommand: npm install
+    startCommand: node server/index.js
+    envVars:
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false
+      - key: KITE_REFRESH_TOKEN
+        sync: false
+      - key: KITE_ACCESS_TOKEN
+        sync: false
+      - key: KITE_REDIRECT_URL
+        value: https://kite-backend.onrender.com/api/auth/callback
+      - key: FRONTEND_URL
+        sync: false
+      - key: KITE_PORT
+        value: 10000
+
+  - type: static
+    name: kite-frontend
+    rootDir: .
+    buildCommand: npm install && npm run build
+    staticPublishPath: build
+    envVars:
+      - key: REACT_APP_API_BASE_URL
+        value: https://kite-backend.onrender.com/api/
