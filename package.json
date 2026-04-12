@@ -28,7 +28,7 @@
   "scripts": {
     "server": "node --watch server/index.js",
     "start": "cross-env PORT=8080 react-scripts --openssl-legacy-provider  start",
-    "build": "GENERATE_SOURCEMAP=false react-scripts build",
+    "build": "NODE_OPTIONS=--openssl-legacy-provider GENERATE_SOURCEMAP=false react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
