@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Typography } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import { basePath, get, post } from "../utils/axios";
 import { engulfe } from "../utils/analysis";
+import { stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70, stocks70To75_2 } from "../constants/stock";
 
 const SCANNER_OPTIONS = [
     { id: "1", key: "stocks65To70", label: "Scanner 1", description: "65 to 70 range" },
@@ -118,19 +118,26 @@ const getStoredJson = (key, fallback) => {
     }
 };
 
+const SCANNER_STOCK_GROUPS = {
+    stocks65To70,
+    stocks70To75,
+    stocks75To80,
+    stocks80To100,
+    stocks80To100_2,
+    stocks70To75_2,
+};
+
 const ScannerHome = () => {
-    const navigate = useNavigate();
-    const { id } = useParams();
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(false);
     const [authStatus, setAuthStatus] = useState(null);
     const [authLoading, setAuthLoading] = useState(false);
+    const [scannerId, setScannerId] = useState("1");
+    const [stockNames, setStockNames] = useState(() => getStoredJson("stockNames", {}));
     const [tracker, setTracker] = useState({
         engulfe: [],
     });
 
-    const scannerId = String(id || "1");
-    const stockNames = useMemo(() => getStoredJson("stockNames", {}), []);
     const storageAnalysis = useMemo(() => getStoredJson("analysis", {}), []);
     const currentScanner = SCANNER_OPTIONS.find((option) => option.id === scannerId) || SCANNER_OPTIONS[0];
 
@@ -152,6 +159,46 @@ const ScannerHome = () => {
 
     useEffect(() => {
         fetchAuthStatus();
+    }, []);
+
+    useEffect(() => {
+        let active = true;
+
+        const hydrateStockNames = async () => {
+            try {
+                const res = await get("instruments");
+                if (!active) {
+                    return;
+                }
+
+                let filterData = res.data.filter((val) => val.segment === "NSE" && val.instrument_type === "EQ" && val.name);
+                filterData = filterData.map((val) => ({ ...val, id: val.instrument_token }));
+
+                const mappedStockNames = Object.entries(SCANNER_STOCK_GROUPS).reduce((accumulator, [key, stocks]) => {
+                    accumulator[key] = stocks.map((stockName) => {
+                        const foundStock = filterData.find((stock) => stock.name === stockName);
+                        return {
+                            name: stockName,
+                            instrument_token: foundStock?.instrument_token,
+                        };
+                    });
+                    return accumulator;
+                }, {});
+
+                localStorage.setItem("stockNames", JSON.stringify(mappedStockNames));
+                setStockNames(mappedStockNames);
+            } catch (error) {
+                if (active) {
+                    setStockNames((previous) => previous || {});
+                }
+            }
+        };
+
+        hydrateStockNames();
+
+        return () => {
+            active = false;
+        };
     }, []);
 
     useEffect(() => {
@@ -323,7 +370,7 @@ const ScannerHome = () => {
                                     labelId="scanner-select-label"
                                     value={scannerId}
                                     label="Scanner"
-                                    onChange={(event) => navigate(`/scannerHome/${event.target.value}`)}
+                                    onChange={(event) => setScannerId(event.target.value)}
                                     sx={{
                                         color: "#fff",
                                         ".MuiOutlinedInput-notchedOutline": {
