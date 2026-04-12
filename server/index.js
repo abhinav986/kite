@@ -10,6 +10,9 @@ const PORT = Number(process.env.KITE_PORT || process.env.PORT || 5000);
 const DAY_INTERVAL = "day";
 const INTRADAY_INTERVAL = "5minute";
 const SESSION_FILE_PATH = path.join(process.cwd(), ".kite-session.json");
+const HISTORICAL_CONCURRENCY_LIMIT = Number(process.env.HISTORICAL_CONCURRENCY_LIMIT || 3);
+const INTRADAY_CACHE_TTL_MS = Number(process.env.INTRADAY_CACHE_TTL_MS || 30 * 1000);
+const DAY_CACHE_TTL_MS = Number(process.env.DAY_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const config = {
   apiKey: process.env.KITE_API_KEY,
@@ -45,6 +48,10 @@ const cache = {
     expiresAt: 0,
     value: null,
   },
+  historical: new Map(),
+  historicalInflight: new Map(),
+  historicalQueue: [],
+  historicalActiveCount: 0,
 };
 
 function loadEnvFile() {
@@ -396,6 +403,108 @@ function getLoginUrl() {
   return kite.getLoginURL();
 }
 
+function getHistoricalCacheTtl(mode) {
+  return mode === "intraday" ? INTRADAY_CACHE_TTL_MS : DAY_CACHE_TTL_MS;
+}
+
+function getHistoricalCacheKey({ instrumentToken, interval, from, to, continuous, oi, mode }) {
+  return [
+    mode,
+    instrumentToken,
+    interval,
+    new Date(from).toISOString(),
+    new Date(to).toISOString(),
+    continuous ? "1" : "0",
+    oi ? "1" : "0",
+  ].join("|");
+}
+
+function getCachedHistoricalResponse(cacheKey) {
+  const cached = cache.historical.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    cache.historical.delete(cacheKey);
+    return null;
+  }
+
+  return cached.value;
+}
+
+function setCachedHistoricalResponse(cacheKey, value, ttlMs) {
+  cache.historical.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
+function runHistoricalTask(task) {
+  return new Promise((resolve, reject) => {
+    const execute = async () => {
+      cache.historicalActiveCount += 1;
+
+      try {
+        resolve(await task());
+      } catch (error) {
+        reject(error);
+      } finally {
+        cache.historicalActiveCount -= 1;
+        const next = cache.historicalQueue.shift();
+        if (next) {
+          next();
+        }
+      }
+    };
+
+    if (cache.historicalActiveCount < HISTORICAL_CONCURRENCY_LIMIT) {
+      execute();
+      return;
+    }
+
+    cache.historicalQueue.push(execute);
+  });
+}
+
+async function getHistoricalDataCached(request) {
+  const cacheKey = getHistoricalCacheKey(request);
+  const ttlMs = getHistoricalCacheTtl(request.mode);
+  const cached = getCachedHistoricalResponse(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const inflight = cache.historicalInflight.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
+
+  const promise = runHistoricalTask(() =>
+    withKiteAuth(() =>
+      kite.getHistoricalData(
+        request.instrumentToken,
+        request.interval,
+        request.from,
+        request.to,
+        request.continuous,
+        request.oi
+      )
+    )
+  );
+
+  cache.historicalInflight.set(cacheKey, promise);
+
+  try {
+    const data = await promise;
+    setCachedHistoricalResponse(cacheKey, data, ttlMs);
+    return data;
+  } finally {
+    cache.historicalInflight.delete(cacheKey);
+  }
+}
+
 function buildAuthCallbackSuccessPage() {
   const destination = config.frontendUrl || "/";
 
@@ -563,16 +672,15 @@ const routes = {
     const continuous = parseBoolean(url.searchParams.get("continuous"), false);
     const oi = parseBoolean(url.searchParams.get("oi"), false);
 
-    const data = await withKiteAuth(() =>
-      kite.getHistoricalData(
-        instrumentToken,
-        interval,
-        range.from,
-        range.to,
-        continuous,
-        oi
-      )
-    );
+    const data = await getHistoricalDataCached({
+      instrumentToken,
+      mode,
+      interval,
+      from: range.from,
+      to: range.to,
+      continuous,
+      oi,
+    });
 
     sendJson(res, 200, data);
   },
