@@ -355,8 +355,8 @@ function resolveDateRange(searchParams, mode) {
   startOfToday.setHours(0, 0, 0, 0);
 
   // Get yesterday
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
+  const yesterday = new Date(startOfToday);
+  yesterday.setDate(startOfToday.getDate() - 1);
   yesterday.setHours(23, 59, 59, 999); // optional: end of yesterday
 
   return {
