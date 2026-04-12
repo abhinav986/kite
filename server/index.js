@@ -335,28 +335,6 @@ function getRequiredNumber(searchParams, key) {
   return parsed;
 }
 
-function resolveDateRange(searchParams, mode) {
-  const now = new Date();
-  const from = searchParams.get("from");
-  const to = searchParams.get("to");
-
-  if (from && to) {
-    return { from, to };
-  }
-
-  const startOfToday = new Date("04/10/2026");
-  startOfToday.setHours(0, 0, 0, 0);
-
-  // Get yesterday
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  yesterday.setHours(23, 59, 59, 999); // optional: end of yesterday
-
-  return {
-    from: startOfToday,
-    to: yesterday,
-  };
-}
 // function resolveDateRange(searchParams, mode) {
 //   const now = new Date();
 //   const from = searchParams.get("from");
@@ -366,14 +344,36 @@ function resolveDateRange(searchParams, mode) {
 //     return { from, to };
 //   }
 
-//   const startOfToday = new Date(now);
+//   const startOfToday = new Date("04/10/2026");
 //   startOfToday.setHours(0, 0, 0, 0);
+
+//   // Get yesterday
+//   const yesterday = new Date(now);
+//   yesterday.setDate(now.getDate() - 1);
+//   yesterday.setHours(23, 59, 59, 999); // optional: end of yesterday
 
 //   return {
 //     from: startOfToday,
-//     to: now,
+//     to: yesterday,
 //   };
 // }
+function resolveDateRange(searchParams, mode) {
+  const now = new Date();
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+
+  if (from && to) {
+    return { from, to };
+  }
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  return {
+    from: startOfToday,
+    to: now,
+  };
+}
 
 async function getInstruments(exchange) {
   const cacheKey = exchange || "all";
