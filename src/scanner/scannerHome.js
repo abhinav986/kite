@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Typography } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import { basePath, get, post } from "../utils/axios";
@@ -137,6 +137,7 @@ const ScannerHome = () => {
     const [tracker, setTracker] = useState({
         engulfe: [],
     });
+    const lastIntradayRequestKey = useRef("");
 
     const storageAnalysis = useMemo(() => getStoredJson("analysis", {}), []);
     const currentScanner = SCANNER_OPTIONS.find((option) => option.id === scannerId) || SCANNER_OPTIONS[0];
@@ -144,6 +145,13 @@ const ScannerHome = () => {
     const stockList = useMemo(() => {
         return stockNames?.[currentScanner.key] || [];
     }, [currentScanner.key, stockNames]);
+
+    const stockRequestKey = useMemo(() => {
+        return stockList
+            .map((stock) => stock.instrument_token)
+            .filter(Boolean)
+            .join(",");
+    }, [stockList]);
 
     const fetchAuthStatus = async () => {
         setAuthLoading(true);
@@ -205,6 +213,12 @@ const ScannerHome = () => {
         let active = true;
 
         const loadScannerData = async () => {
+            if (!stockRequestKey || lastIntradayRequestKey.current === stockRequestKey) {
+                return;
+            }
+
+            lastIntradayRequestKey.current = stockRequestKey;
+
             const requests = stockList
                 .filter((stock) => stock.instrument_token)
                 .map((stock) =>
@@ -231,7 +245,7 @@ const ScannerHome = () => {
         return () => {
             active = false;
         };
-    }, [stockList]);
+    }, [stockList, stockRequestKey]);
 
     useEffect(() => {
         const engulfeArr = [];
