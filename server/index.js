@@ -364,20 +364,39 @@ function getRequiredNumber(searchParams, key) {
 //     to: yesterday,
 //   };
 // }
+// Format date to Kite-required format
+function formatDate(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return (
+    date.getFullYear() +
+    "-" +
+    pad(date.getMonth() + 1) +
+    "-" +
+    pad(date.getDate()) +
+    " " +
+    pad(date.getHours()) +
+    ":" +
+    pad(date.getMinutes()) +
+    ":" +
+    pad(date.getSeconds())
+  );
+}
+
+// Convert system time → IST
 function getISTDate(date = new Date()) {
   return new Date(
     date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
   );
 }
 
+// Main function
 function resolveDateRange(searchParams, mode) {
-  // Get current IST time
   const nowIST = getISTDate();
 
   const fromParam = searchParams.get("from");
   const toParam = searchParams.get("to");
 
-  // If user provided dates → use them directly
   if (fromParam && toParam) {
     return {
       from: fromParam,
@@ -385,13 +404,11 @@ function resolveDateRange(searchParams, mode) {
     };
   }
 
-  // Start of today in IST
   const startOfTodayIST = new Date(nowIST);
-  startOfTodayIST.setHours(9, 15, 0, 0); // NSE market start
+  startOfTodayIST.setHours(9, 15, 0, 0);
 
-  // Edge case: before market open
+  // Before market open → fallback to yesterday
   if (nowIST < startOfTodayIST) {
-    // fallback to yesterday market hours
     const yesterday = new Date(startOfTodayIST);
     yesterday.setDate(yesterday.getDate() - 1);
 
@@ -412,6 +429,7 @@ function resolveDateRange(searchParams, mode) {
     to: formatDate(nowIST),
   };
 }
+
 
 async function getInstruments(exchange) {
   const cacheKey = exchange || "all";
