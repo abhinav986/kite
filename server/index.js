@@ -364,21 +364,52 @@ function getRequiredNumber(searchParams, key) {
 //     to: yesterday,
 //   };
 // }
-function resolveDateRange(searchParams, mode) {
-  const now = new Date();
-  const from = searchParams.get("from");
-  const to = searchParams.get("to");
+function getISTDate(date = new Date()) {
+  return new Date(
+    date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
+  );
+}
 
-  if (from && to) {
-    return { from, to };
+function resolveDateRange(searchParams, mode) {
+  // Get current IST time
+  const nowIST = getISTDate();
+
+  const fromParam = searchParams.get("from");
+  const toParam = searchParams.get("to");
+
+  // If user provided dates → use them directly
+  if (fromParam && toParam) {
+    return {
+      from: fromParam,
+      to: toParam,
+    };
   }
 
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  // Start of today in IST
+  const startOfTodayIST = new Date(nowIST);
+  startOfTodayIST.setHours(9, 15, 0, 0); // NSE market start
+
+  // Edge case: before market open
+  if (nowIST < startOfTodayIST) {
+    // fallback to yesterday market hours
+    const yesterday = new Date(startOfTodayIST);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const yesterdayStart = new Date(yesterday);
+    yesterdayStart.setHours(9, 15, 0, 0);
+
+    const yesterdayEnd = new Date(yesterday);
+    yesterdayEnd.setHours(15, 30, 0, 0);
+
+    return {
+      from: formatDate(yesterdayStart),
+      to: formatDate(yesterdayEnd),
+    };
+  }
 
   return {
-    from: startOfToday,
-    to: now,
+    from: formatDate(startOfTodayIST),
+    to: formatDate(nowIST),
   };
 }
 
