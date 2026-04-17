@@ -391,7 +391,7 @@ function getISTDate(date = new Date()) {
 }
 
 // Main function
-function resolveDateRange(searchParams, mode) {
+function resolveDateRange(searchParams, mode, fallbackWindow = "default") {
   const nowIST = getISTDate();
 
   const fromParam = searchParams.get("from");
@@ -401,6 +401,20 @@ function resolveDateRange(searchParams, mode) {
     return {
       from: fromParam,
       to: toParam,
+    };
+  }
+
+  if (mode === "intraday" && fallbackWindow === "month") {
+    const thirtyDaysAgoIST = new Date(nowIST);
+    thirtyDaysAgoIST.setDate(thirtyDaysAgoIST.getDate() - 30);
+    thirtyDaysAgoIST.setHours(9, 15, 0, 0);
+
+    const rangeEnd = new Date(nowIST);
+    rangeEnd.setSeconds(0, 0);
+
+    return {
+      from: formatDate(thirtyDaysAgoIST),
+      to: formatDate(rangeEnd),
     };
   }
 
@@ -715,8 +729,9 @@ const routes = {
 
   async historical(req, res, url, params = {}) {
     const instrumentToken = params.instrumentToken || getRequiredNumber(url.searchParams, "id");
-    const mode = params.mode || "day";
-    const range = resolveDateRange(url.searchParams, mode);
+    const mode = params.mode || url.searchParams.get("mode") || "intraday";
+    const fallbackWindow = params.fallbackWindow || url.searchParams.get("fallbackWindow") || (mode === "intraday" ? "month" : "default");
+    const range = resolveDateRange(url.searchParams, mode, fallbackWindow);
     const interval = url.searchParams.get("interval") || (mode === "intraday" ? INTRADAY_INTERVAL : DAY_INTERVAL);
     const continuous = parseBoolean(url.searchParams.get("continuous"), false);
     const oi = parseBoolean(url.searchParams.get("oi"), false);
@@ -825,7 +840,7 @@ const router = [
   {
     method: "GET",
     pattern: /^\/api\/historyData\/intraday\/?$/,
-    handler: (req, res, url) => routes.historical(req, res, url, { mode: "intraday" }),
+    handler: (req, res, url) => routes.historical(req, res, url, { mode: "intraday", fallbackWindow: "default" }),
   },
   { method: "POST", pattern: /^\/api\/orders\/?$/, handler: routes.placeOrder },
   { method: "PUT", pattern: /^\/api\/orders\/([^/]+)\/?$/, handler: routes.modifyOrder, keys: ["orderId"] },

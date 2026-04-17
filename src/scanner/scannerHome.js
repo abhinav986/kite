@@ -14,21 +14,30 @@ const SCANNER_OPTIONS = [
     { id: "6", key: "stocks70To75_2", label: "Scanner 6", description: "70 to 75 alt set" },
 ];
 
-const columns = [
+const getColumns = (onSelectStock) => [
     {
         field: "name",
         headerName: "Stock",
         flex: 1.1,
         minWidth: 180,
         renderCell: (params) => (
-            <span
-                style={{
+            <Button
+                variant="text"
+                onClick={() => onSelectStock?.({
+                    instrumentToken: params.row.instrument_token,
+                    name: params.row.name,
+                })}
+                sx={{
+                    p: 0,
+                    minWidth: 0,
+                    justifyContent: "flex-start",
+                    textTransform: "none",
                     color: "#0f3d3e",
                     fontWeight: 700,
                 }}
             >
                 {params.row.name}
-            </span>
+            </Button>
         ),
     },
     {
@@ -127,7 +136,7 @@ const SCANNER_STOCK_GROUPS = {
     stocks70To75_2,
 };
 
-const ScannerHome = () => {
+const ScannerHome = ({ embedded = false, onSelectStock }) => {
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(false);
     const [authStatus, setAuthStatus] = useState(null);
@@ -282,6 +291,7 @@ const ScannerHome = () => {
 
         return { total, active, bullish, totalProfit };
     }, [tracker.engulfe]);
+    const columns = useMemo(() => getColumns(onSelectStock), [onSelectStock]);
 
     const openKiteLogin = () => {
         window.location.assign(`${basePath}auth/login`);
@@ -300,16 +310,17 @@ const ScannerHome = () => {
     return (
         <Box
             sx={{
-                minHeight: "100vh",
-                background:
-                    "radial-gradient(circle at top, rgba(255,226,196,0.75), transparent 26%), linear-gradient(135deg, #fffaf0 0%, #dff3f0 48%, #f9f2df 100%)",
-                p: { xs: 2, md: 4 },
+                minHeight: embedded ? "auto" : "100vh",
+                background: embedded
+                    ? "transparent"
+                    : "radial-gradient(circle at top, rgba(255,226,196,0.75), transparent 26%), linear-gradient(135deg, #fffaf0 0%, #dff3f0 48%, #f9f2df 100%)",
+                p: embedded ? 0 : { xs: 2, md: 4 },
             }}
         >
             <Paper
                 elevation={0}
                 sx={{
-                    maxWidth: 1280,
+                    maxWidth: embedded ? "100%" : 1280,
                     mx: "auto",
                     p: { xs: 2, md: 3 },
                     borderRadius: 6,
