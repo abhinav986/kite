@@ -101,7 +101,7 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                             {decodedName}
                         </Typography>
                         <Typography sx={{ mt: 1, color: '#64748b' }}>
-                            Past 30 days, 5-minute engulfe analysis for the selected stock.
+                            Past 2 months, 5-minute engulfe analysis for the selected stock.
                         </Typography>
                     </Box>
 

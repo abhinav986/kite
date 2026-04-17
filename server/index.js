@@ -405,15 +405,15 @@ function resolveDateRange(searchParams, mode, fallbackWindow = "default") {
   }
 
   if (mode === "intraday" && fallbackWindow === "month") {
-    const thirtyDaysAgoIST = new Date(nowIST);
-    thirtyDaysAgoIST.setDate(thirtyDaysAgoIST.getDate() - 30);
-    thirtyDaysAgoIST.setHours(9, 15, 0, 0);
+    const twoMonthsAgoIST = new Date(nowIST);
+    twoMonthsAgoIST.setMonth(twoMonthsAgoIST.getMonth() - 2);
+    twoMonthsAgoIST.setHours(9, 15, 0, 0);
 
     const rangeEnd = new Date(nowIST);
     rangeEnd.setSeconds(0, 0);
 
     return {
-      from: formatDate(thirtyDaysAgoIST),
+      from: formatDate(twoMonthsAgoIST),
       to: formatDate(rangeEnd),
     };
   }
