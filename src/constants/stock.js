@@ -130,6 +130,7 @@ export const stocks70To75_2 = [
     "VARROC ENGINEERING",
     "VINYL CHEMICALS (I)",
     "VARDHMAN TEXTILES",
+    "SHRIRAM FINANCE",
 ]
 
 export const stocks75To80 = [
