@@ -195,6 +195,12 @@ export const stocks75To80 = [
     "LT FOODS",
     "POWER FIN CORP",
     "ASTRAL",
+    "FORTIS HEALTHCARE",
+    "POWER GRID CORP.",
+    "COLGATE PALMOLIVE",
+    "REC",
+    "TITAGARH RAIL SYSTEMS",
+    "BAJAJ FINSERV",
 ]
 export const stocks80To100 = [
     "SONA BLW PRECISION FRGS L",
