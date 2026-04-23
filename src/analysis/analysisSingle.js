@@ -174,7 +174,7 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
     }, [label, name, summary.percent, trackedStocks]);
 
     return (
-        <div style={{ width: '100%' }}>
+        <Box sx={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
             <Box
                 sx={{
                     display: 'grid',
@@ -194,6 +194,7 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
                         elevation={0}
                         sx={{
                             p: 1.5,
+                            minWidth: 0,
                             borderRadius: 3,
                             border: '1px solid rgba(15, 23, 42, 0.08)',
                             background: 'rgba(255,255,255,0.86)',
@@ -208,7 +209,7 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
                     </Paper>
                 ))}
             </Box>
-            <div style={{ height: 400, width: '100%' }}>
+            <Box sx={{ height: 400, width: '100%', maxWidth: '100%', minWidth: 0, overflow: 'hidden' }}>
                 <DataGrid
                     rows={result}
                     columns={columns}
@@ -221,13 +222,15 @@ const AnalyticsSingle = ({ data, analysisFunction, label, name }) => {
                     pageSizeOptions={[10, 25, 50]}
                     sx={{
                         width: '100%',
+                        maxWidth: '100%',
+                        minWidth: 0,
                         '& .MuiDataGrid-main': {
                             width: '100%',
                         },
                     }}
                 />
-            </div>
-        </div>
+            </Box>
+        </Box>
     );
 };
 export default AnalyticsSingle;

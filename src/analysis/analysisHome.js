@@ -48,26 +48,32 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                     : 'radial-gradient(circle at top left, rgba(20,184,166,0.16), transparent 26%), linear-gradient(180deg, #f8fafc 0%, #eefbf8 100%)',
                 p: embedded ? 0 : { xs: 2, md: 4 },
                 width: '100%',
+                maxWidth: '100%',
+                minWidth: 0,
                 height: embedded ? '100%' : 'auto',
                 display: embedded ? 'flex' : 'block',
+                overflow: 'hidden',
             }}
         >
             <Paper
                 elevation={0}
                 sx={{
                     maxWidth: embedded ? '100%' : 1400,
+                    width: '100%',
                     mx: 'auto',
                     p: { xs: 2, md: 3 },
                     borderRadius: 5,
                     border: '1px solid rgba(15, 61, 62, 0.08)',
                     background: 'rgba(255,255,255,0.9)',
                     boxShadow: '0 24px 60px rgba(15, 61, 62, 0.08)',
+                    minWidth: 0,
                     height: embedded ? '100%' : 'auto',
                     display: 'flex',
                     flex: embedded ? 1 : 'initial',
+                    overflow: 'hidden',
                 }}
             >
-                <Stack spacing={3} sx={{ flex: 1 }}>
+                <Stack spacing={3} sx={{ flex: 1, minWidth: 0 }}>
                     <Box>
                         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
                             <Chip
@@ -96,11 +102,12 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                         <Typography
                             variant="h3"
                             sx={{
-                                fontSize: { xs: '2rem', md: '2.6rem' },
+                                fontSize: { xs: '1.8rem', md: '2.4rem', xl: '2.6rem' },
                                 lineHeight: 1,
                                 color: '#0f172a',
                                 fontWeight: 800,
                                 letterSpacing: '-0.04em',
+                                overflowWrap: 'anywhere',
                             }}
                         >
                             {decodedName}
