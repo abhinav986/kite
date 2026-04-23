@@ -201,6 +201,9 @@ export const stocks75To80 = [
     "REC",
     "TITAGARH RAIL SYSTEMS",
     "BAJAJ FINSERV",
+    "GODAWARI POW & ISP",
+    "EMAMI",
+    "TECH MAHINDRA",
 ]
 export const stocks80To100 = [
     "SONA BLW PRECISION FRGS L",

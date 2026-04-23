@@ -14,7 +14,8 @@ code {
 .analysis-home {
   display: flex;
   flex-wrap: wrap;
+  width: 100%;
 }
 .analysis-home > div {
-  width: 50%;
+  width: 100%;
 }

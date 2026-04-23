@@ -203,59 +203,112 @@ const Listing = () => {
                         </Paper>
                     </Box>
 
-                    <Paper
-                        elevation={0}
+                    <Box
                         sx={{
-                            p: 2,
-                            borderRadius: 5,
-                            border: "1px solid rgba(15, 23, 42, 0.06)",
-                            background: "rgba(255,255,255,0.9)",
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", lg: "repeat(2, minmax(0, 1fr))" },
+                            gap: 3,
+                            alignItems: "stretch",
                         }}
                     >
-                        <Stack
-                            direction={{ xs: "column", md: "row" }}
-                            spacing={1.5}
-                            justifyContent="space-between"
-                            sx={{ mb: 2 }}
+                        <Paper
+                            elevation={0}
+                            sx={{
+                                p: 2,
+                                borderRadius: 5,
+                                border: "1px solid rgba(15, 23, 42, 0.06)",
+                                background: "rgba(255,255,255,0.9)",
+                                minWidth: 0,
+                            }}
                         >
-                            <Box>
-                                <Typography sx={{ fontSize: 24, fontWeight: 800, color: "#0f172a" }}>
-                                    All Instruments
-                                </Typography>
-                                <Typography sx={{ color: "#64748b" }}>
-                                    Click a stock name to show its past history analysis in this same page.
-                                </Typography>
-                            </Box>
-                        </Stack>
+                            <Stack
+                                direction={{ xs: "column", md: "row" }}
+                                spacing={1.5}
+                                justifyContent="space-between"
+                                sx={{ mb: 2 }}
+                            >
+                                <Box>
+                                    <Typography sx={{ fontSize: 24, fontWeight: 800, color: "#0f172a" }}>
+                                        All Instruments
+                                    </Typography>
+                                    <Typography sx={{ color: "#64748b" }}>
+                                        Click a stock name to show its past history analysis in this same page.
+                                    </Typography>
+                                </Box>
+                            </Stack>
 
-                        <Box sx={{ height: 620, width: "100%" }}>
-                            <DataGrid
-                                rows={data}
-                                columns={columns}
-                                disableRowSelectionOnClick
-                                initialState={{
-                                    pagination: {
-                                        paginationModel: { page: 0, pageSize: 50 },
-                                    },
-                                }}
-                                pageSizeOptions={[25, 50, 100]}
-                            />
+                            <Box sx={{ height: 620, width: "100%", minWidth: 0 }}>
+                                <DataGrid
+                                    rows={data}
+                                    columns={columns}
+                                    disableRowSelectionOnClick
+                                    initialState={{
+                                        pagination: {
+                                            paginationModel: { page: 0, pageSize: 50 },
+                                        },
+                                    }}
+                                    pageSizeOptions={[25, 50, 100]}
+                                />
+                            </Box>
+                        </Paper>
+
+                        <Box sx={{ minWidth: 0 }}>
+                            {selectedStock ? (
+                                <AnalyticsHome
+                                    instrumentToken={selectedStock.instrumentToken}
+                                    stockName={selectedStock.name}
+                                    embedded
+                                    onClose={() => setSelectedStock(null)}
+                                />
+                            ) : (
+                                <Paper
+                                    elevation={0}
+                                    sx={{
+                                        p: { xs: 2, md: 3 },
+                                        borderRadius: 5,
+                                        border: "1px solid rgba(15, 61, 62, 0.08)",
+                                        background: "rgba(255,255,255,0.9)",
+                                        boxShadow: "0 24px 60px rgba(15, 61, 62, 0.08)",
+                                        minHeight: { xs: 280, lg: 620 },
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        justifyContent: "center",
+                                    }}
+                                >
+                                    <Chip
+                                        label="History Analysis"
+                                        sx={{
+                                            alignSelf: "flex-start",
+                                            mb: 2,
+                                            fontWeight: 800,
+                                            color: "#0f3d3e",
+                                            backgroundColor: "rgba(15, 61, 62, 0.08)",
+                                        }}
+                                    />
+                                    <Typography
+                                        variant="h4"
+                                        sx={{
+                                            fontSize: { xs: "1.8rem", md: "2.2rem" },
+                                            lineHeight: 1.05,
+                                            color: "#0f172a",
+                                            fontWeight: 800,
+                                            letterSpacing: "-0.04em",
+                                        }}
+                                    >
+                                        Pick an instrument to analyze.
+                                    </Typography>
+                                    <Typography sx={{ mt: 1.5, maxWidth: 520, color: "#64748b" }}>
+                                        Click any stock name from the left to load its past 2 months of 5-minute engulfe analysis here.
+                                    </Typography>
+                                </Paper>
+                            )}
                         </Box>
-                    </Paper>
+                    </Box>
 
                     {showScanner ? (
                         <ScannerHome
                             embedded
                             onSelectStock={(stock) => setSelectedStock(stock)}
-                        />
-                    ) : null}
-
-                    {selectedStock ? (
-                        <AnalyticsHome
-                            instrumentToken={selectedStock.instrumentToken}
-                            stockName={selectedStock.name}
-                            embedded
-                            onClose={() => setSelectedStock(null)}
                         />
                     ) : null}
                 </Stack>

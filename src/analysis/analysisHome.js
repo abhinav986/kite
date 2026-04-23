@@ -48,6 +48,8 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                     : 'radial-gradient(circle at top left, rgba(20,184,166,0.16), transparent 26%), linear-gradient(180deg, #f8fafc 0%, #eefbf8 100%)',
                 p: embedded ? 0 : { xs: 2, md: 4 },
                 width: '100%',
+                height: embedded ? '100%' : 'auto',
+                display: embedded ? 'flex' : 'block',
             }}
         >
             <Paper
@@ -60,9 +62,12 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                     border: '1px solid rgba(15, 61, 62, 0.08)',
                     background: 'rgba(255,255,255,0.9)',
                     boxShadow: '0 24px 60px rgba(15, 61, 62, 0.08)',
+                    height: embedded ? '100%' : 'auto',
+                    display: 'flex',
+                    flex: embedded ? 1 : 'initial',
                 }}
             >
-                <Stack spacing={3}>
+                <Stack spacing={3} sx={{ flex: 1 }}>
                     <Box>
                         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
                             <Chip
