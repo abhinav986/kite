@@ -526,39 +526,6 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
                         </Typography>
                     </Paper>
 
-                    <Box
-                        sx={{
-                            display: "grid",
-                            gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", xl: "repeat(4, 1fr)" },
-                            gap: 2,
-                        }}
-                    >
-                        {[
-                            { label: "Stocks Loaded", value: stockList.length, tone: "#0f766e" },
-                            { label: "Signals Found", value: stats.total, tone: "#b45309" },
-                            { label: "Active Setups", value: stats.active, tone: "#1d4ed8" },
-                            { label: "Net Profit", value: stats.totalProfit, tone: stats.totalProfit >= 0 ? "#15803d" : "#b91c1c" },
-                        ].map((item) => (
-                            <Paper
-                                key={item.label}
-                                elevation={0}
-                                sx={{
-                                    p: 2.25,
-                                    borderRadius: 4,
-                                    border: "1px solid rgba(15, 23, 42, 0.06)",
-                                    background: "rgba(255,255,255,0.88)",
-                                }}
-                            >
-                                <Typography sx={{ color: "#64748b", fontSize: 13, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                                    {item.label}
-                                </Typography>
-                                <Typography sx={{ mt: 0.8, fontSize: 30, fontWeight: 800, color: item.tone }}>
-                                    {item.value}
-                                </Typography>
-                            </Paper>
-                        ))}
-                    </Box>
-
                     <Paper
                         elevation={0}
                         sx={{

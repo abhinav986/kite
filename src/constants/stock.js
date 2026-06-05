@@ -294,4 +294,5 @@ export const stocks80To100_2 = [
     "JIO FIN SERVICES",
     "HITACHI ENERGY INDIA",
     "L&T TECHNOLOGY SER.",
+    "EXIDE INDUSTRIES"
 ]

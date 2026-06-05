@@ -101,8 +101,6 @@ export const engulfe = (candles) => {
 
         // Phase 1: 2 strong candles
         let upPhase1 =
-            c1.close > c0.high &&
-            c1.low > c0.low &&
             c2.close > c1.high &&
             c2.low > c1.low;
 
@@ -133,10 +131,14 @@ export const engulfe = (candles) => {
                     if(candles[k].high > hightestHigh) {
                         crossCount++;
                         topPrice = candles[k].high;
-                        if(crossCount === 4) {
+                        if(crossCount === 3) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].high;
+                            break;
+                        }
+                        if(crossCount === 1 && candles[k].close < hightestHigh) {
+                            inProgress = false;
                             break;
                         }
                     }
@@ -159,8 +161,6 @@ export const engulfe = (candles) => {
         // =========================
 
         let downPhase1 =
-            c1.close < c0.low &&
-            c1.high < c0.high &&
             c2.close < c1.low &&
             c2.high < c1.high;
 
@@ -197,10 +197,14 @@ export const engulfe = (candles) => {
                     if (candles[k].low < lowestLow) {
                         crossCount++;
                         lowestPrice = candles[k].low;
-                        if (crossCount === 4) {
+                        if (crossCount === 3) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].low;
+                            break;
+                        }
+                        if(crossCount === 1 && candles[k].close > lowestLow) {
+                            inProgress = false;
                             break;
                         }
                     }
