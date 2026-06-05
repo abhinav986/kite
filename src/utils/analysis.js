@@ -102,7 +102,8 @@ export const engulfe = (candles) => {
         // Phase 1: 2 strong candles
         let upPhase1 =
             c2.close > c1.high &&
-            c2.low > c1.low;
+            c2.low > c1.low &&
+            c0.low > c1.low;
 
         if (upPhase1) {
             let validPullbackUp = false;
@@ -162,7 +163,8 @@ export const engulfe = (candles) => {
 
         let downPhase1 =
             c2.close < c1.low &&
-            c2.high < c1.high;
+            c2.high < c1.high &&
+            c0.high < c1.high;
 
         if (downPhase1) {
             let validPullbackDown = false;
