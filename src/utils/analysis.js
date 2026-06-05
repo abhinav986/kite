@@ -135,7 +135,7 @@ export const engulfe = (candles) => {
                     if(candles[k].high > hightestHigh) {
                         crossCount++;
                         topPrice = candles[k].high;
-                        if(crossCount === 3) {
+                        if(crossCount === 4) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].high;
@@ -205,7 +205,7 @@ export const engulfe = (candles) => {
                     if (candles[k].low < lowestLow) {
                         crossCount++;
                         lowestPrice = candles[k].low;
-                        if (crossCount === 3) {
+                        if (crossCount === 4) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].low;
