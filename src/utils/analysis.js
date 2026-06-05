@@ -102,8 +102,7 @@ export const engulfe = (candles) => {
         // Phase 1: 2 strong candles
         let upPhase1 =
             c2.close > c1.high &&
-            c2.low > c1.low &&
-            c0.low > c1.low;
+            c2.low > c1.low;
 
         if (upPhase1) {
             let validPullbackUp = false;
@@ -112,6 +111,10 @@ export const engulfe = (candles) => {
             let dontCrossLow = c1.low;
             let topPrice = 0;
             for(let k = i + 1; k < candles.length; k++) {
+                if(candles[k-1].high >= candles[k].high && candles[k].low >= candles[k-1].low) {
+                        upPhase1 = false;
+                        break;
+                }
                 if(crossCount >= 1 && topPrice < candles[k].high) {
                     topPrice = candles[k].high;
                 } else if(crossCount >= 1 && topPrice >= candles[k].high) {
@@ -163,8 +166,7 @@ export const engulfe = (candles) => {
 
         let downPhase1 =
             c2.close < c1.low &&
-            c2.high < c1.high &&
-            c0.high < c1.high;
+            c2.high < c1.high;
 
         if (downPhase1) {
             let validPullbackDown = false;
@@ -173,6 +175,10 @@ export const engulfe = (candles) => {
             let dontCrossHigh = c1.high;
             let lowestPrice = 0;
             for (let k = i + 1; k < candles.length; k++) {
+                if(candles[k-1].high >= candles[k].high && candles[k].low >= candles[k-1].low) {
+                    downPhase1 = false;
+                    break;
+                }
                 if(crossCount >= 1 && lowestPrice > candles[k].low) {
                     lowestPrice = candles[k].low;
                 } else if(crossCount >= 1 && lowestPrice <= candles[k].low) {
