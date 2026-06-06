@@ -129,7 +129,12 @@ export const engulfe = (candles) => {
                 }
 
                 if(candles[k].low < candles[k-1].low) {
-                    validPullbackUp = true;
+                    if(candles[k].high >= candles[k-1].high) {
+                        upPhase1 = false;
+                        break;
+                    } else {
+                        validPullbackUp = true;
+                    }
                 }
                 if(validPullbackUp) {
                     if(candles[k].high > hightestHigh) {
@@ -142,6 +147,11 @@ export const engulfe = (candles) => {
                             break;
                         }
                         if(crossCount === 1 && candles[k].close < hightestHigh) {
+                            inProgress = false;
+                            break;
+                        }
+                        // engulfe avoid
+                        if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
                             inProgress = false;
                             break;
                         }
@@ -197,6 +207,10 @@ export const engulfe = (candles) => {
 
                 // Pullback detection (opposite of up: higher high)
                 if (candles[k].high > candles[k - 1].high) {
+                    if(candles[k-1].low >= candles[k].low) {
+                        downPhase1 = false;
+                        break;
+                    }
                     validPullbackDown = true;
                 }
 
@@ -212,6 +226,11 @@ export const engulfe = (candles) => {
                             break;
                         }
                         if(crossCount === 1 && candles[k].close > lowestLow) {
+                            inProgress = false;
+                            break;
+                        }
+                        // engulfe avoid
+                        if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
                             inProgress = false;
                             break;
                         }
