@@ -127,6 +127,21 @@ const getStoredJson = (key, fallback) => {
     }
 };
 
+const formatScannerTime = (value) => {
+    if (!value) {
+        return "-";
+    }
+
+    return new Date(value).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour12: true,
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+};
+
 const SCANNER_STOCK_GROUPS = {
     stocks65To70,
     stocks70To75,
@@ -141,6 +156,8 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
     const [loading, setLoading] = useState(false);
     const [authStatus, setAuthStatus] = useState(null);
     const [authLoading, setAuthLoading] = useState(false);
+    const [scannerServiceStatus, setScannerServiceStatus] = useState(null);
+    const [scannerServiceLoading, setScannerServiceLoading] = useState(false);
     const [scannerId, setScannerId] = useState("1");
     const [stockNames, setStockNames] = useState(() => getStoredJson("stockNames", {}));
     const [tracker, setTracker] = useState({
@@ -174,8 +191,23 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
         }
     };
 
+    const fetchScannerServiceStatus = async () => {
+        try {
+            const response = await get("scanner/status");
+            setScannerServiceStatus(response.data);
+        } catch (error) {
+            setScannerServiceStatus(null);
+        }
+    };
+
     useEffect(() => {
         fetchAuthStatus();
+        fetchScannerServiceStatus();
+    }, []);
+
+    useEffect(() => {
+        const timer = window.setInterval(fetchScannerServiceStatus, 15000);
+        return () => window.clearInterval(timer);
     }, []);
 
     useEffect(() => {
@@ -307,6 +339,36 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
         }
     };
 
+    const startScannerService = async () => {
+        setScannerServiceLoading(true);
+        try {
+            const response = await post("scanner/start", {});
+            setScannerServiceStatus(response.data);
+        } finally {
+            setScannerServiceLoading(false);
+        }
+    };
+
+    const stopScannerService = async () => {
+        setScannerServiceLoading(true);
+        try {
+            const response = await post("scanner/stop", {});
+            setScannerServiceStatus(response.data);
+        } finally {
+            setScannerServiceLoading(false);
+        }
+    };
+
+    const runScannerServiceNow = async () => {
+        setScannerServiceLoading(true);
+        try {
+            const response = await post("scanner/run-once", { force: true });
+            setScannerServiceStatus(response.data);
+        } finally {
+            setScannerServiceLoading(false);
+        }
+    };
+
     return (
         <Box
             sx={{
@@ -422,6 +484,68 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
                             <Typography sx={{ opacity: 0.76, fontSize: 14 }}>
                                 {currentScanner.description}
                             </Typography>
+                            <Box sx={{ mt: 3, pt: 2, borderTop: "1px solid rgba(255,255,255,0.16)" }}>
+                                <Typography sx={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.14em", opacity: 0.75 }}>
+                                    Telegram Auto Scan
+                                </Typography>
+                                <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1.5 }}>
+                                    <Chip
+                                        size="small"
+                                        label={scannerServiceStatus?.enabled ? "Running" : "Stopped"}
+                                        sx={{
+                                            fontWeight: 800,
+                                            backgroundColor: scannerServiceStatus?.enabled ? "rgba(34,197,94,0.18)" : "rgba(148,163,184,0.22)",
+                                            color: scannerServiceStatus?.enabled ? "#bbf7d0" : "#e2e8f0",
+                                        }}
+                                    />
+                                    <Chip
+                                        size="small"
+                                        label={scannerServiceStatus?.telegramConfigured ? "Telegram ready" : "Telegram missing"}
+                                        sx={{
+                                            fontWeight: 800,
+                                            backgroundColor: scannerServiceStatus?.telegramConfigured ? "rgba(20,184,166,0.18)" : "rgba(239,68,68,0.22)",
+                                            color: scannerServiceStatus?.telegramConfigured ? "#99f6e4" : "#fecaca",
+                                        }}
+                                    />
+                                </Stack>
+                                <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1.5 }}>
+                                    <Button
+                                        variant="contained"
+                                        size="small"
+                                        onClick={startScannerService}
+                                        disabled={scannerServiceLoading || scannerServiceStatus?.enabled}
+                                        sx={{ backgroundColor: "#f8fafc", color: "#0f3d3e", fontWeight: 800, "&:hover": { backgroundColor: "#e2e8f0" } }}
+                                    >
+                                        Start
+                                    </Button>
+                                    <Button
+                                        variant="outlined"
+                                        size="small"
+                                        onClick={stopScannerService}
+                                        disabled={scannerServiceLoading || !scannerServiceStatus?.enabled}
+                                        sx={{ borderColor: "rgba(255,255,255,0.42)", color: "#fff", fontWeight: 800 }}
+                                    >
+                                        Stop
+                                    </Button>
+                                    <Button
+                                        variant="text"
+                                        size="small"
+                                        onClick={runScannerServiceNow}
+                                        disabled={scannerServiceLoading}
+                                        sx={{ color: "#ccfbf1", fontWeight: 800 }}
+                                    >
+                                        Run Now
+                                    </Button>
+                                </Stack>
+                                <Typography sx={{ mt: 1.5, opacity: 0.78, fontSize: 13 }}>
+                                    Next: {formatScannerTime(scannerServiceStatus?.nextRunAt)} | Last: {formatScannerTime(scannerServiceStatus?.lastRunAt)}
+                                </Typography>
+                                {scannerServiceStatus?.lastError ? (
+                                    <Typography sx={{ mt: 1, color: "#fecaca", fontSize: 13 }}>
+                                        Last error: {scannerServiceStatus.lastError}
+                                    </Typography>
+                                ) : null}
+                            </Box>
                         </Paper>
                     </Box>
 

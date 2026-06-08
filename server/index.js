@@ -13,6 +13,9 @@ const SESSION_FILE_PATH = path.join(process.cwd(), ".kite-session.json");
 const HISTORICAL_CONCURRENCY_LIMIT = Number(process.env.HISTORICAL_CONCURRENCY_LIMIT || 3);
 const INTRADAY_CACHE_TTL_MS = Number(process.env.INTRADAY_CACHE_TTL_MS || 30 * 1000);
 const DAY_CACHE_TTL_MS = Number(process.env.DAY_CACHE_TTL_MS || 5 * 60 * 1000);
+const SCANNER_INTERVAL_MS = Number(process.env.SCANNER_INTERVAL_MS || 5 * 60 * 1000);
+const SCANNER_START_MINUTE_IST = 10 * 60;
+const SCANNER_END_MINUTE_IST = 14 * 60 + 30;
 
 const config = {
   apiKey: process.env.KITE_API_KEY,
@@ -21,6 +24,8 @@ const config = {
   refreshToken: process.env.KITE_REFRESH_TOKEN,
   redirectUrl: process.env.KITE_REDIRECT_URL || "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
+  telegramChatId: process.env.TELEGRAM_CHAT_ID || "",
 };
 
 const persistedSession = loadPersistedSession();
@@ -53,6 +58,26 @@ const cache = {
   historicalQueue: [],
   historicalActiveCount: 0,
 };
+
+const scannerState = {
+  enabled: false,
+  running: false,
+  timer: null,
+  lastRunAt: null,
+  nextRunAt: null,
+  lastError: null,
+  lastSummary: null,
+  notifiedHitKeys: new Set(),
+};
+
+const scannerOptions = [
+  { key: "stocks65To70", label: "Scanner 1" },
+  { key: "stocks70To75", label: "Scanner 2" },
+  { key: "stocks75To80", label: "Scanner 3" },
+  { key: "stocks80To100", label: "Scanner 4" },
+  { key: "stocks80To100_2", label: "Scanner 5" },
+  { key: "stocks70To75_2", label: "Scanner 6" },
+];
 
 function loadEnvFile() {
   const envPath = path.join(process.cwd(), ".env");
@@ -568,6 +593,426 @@ async function getHistoricalDataCached(request) {
   }
 }
 
+function getScannerStatus() {
+  return {
+    enabled: scannerState.enabled,
+    running: scannerState.running,
+    lastRunAt: scannerState.lastRunAt,
+    nextRunAt: scannerState.nextRunAt,
+    lastError: scannerState.lastError,
+    lastSummary: scannerState.lastSummary,
+    notifiedHitCount: scannerState.notifiedHitKeys.size,
+    telegramConfigured: Boolean(config.telegramBotToken && config.telegramChatId),
+    intervalMs: SCANNER_INTERVAL_MS,
+  };
+}
+
+function getMinutesSinceMidnight(date) {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function isScannerWindow(date = new Date()) {
+  const nowIST = getISTDate(date);
+  const day = nowIST.getDay();
+  const minutes = getMinutesSinceMidnight(nowIST);
+
+  return (
+    day >= 1 &&
+    day <= 5 &&
+    minutes >= SCANNER_START_MINUTE_IST &&
+    minutes <= SCANNER_END_MINUTE_IST
+  );
+}
+
+function getDelayToNextScannerWindow(date = new Date()) {
+  const nowIST = getISTDate(date);
+  const targetIST = new Date(nowIST);
+  targetIST.setHours(10, 0, 0, 0);
+
+  if (
+    nowIST.getDay() >= 1 &&
+    nowIST.getDay() <= 5 &&
+    getMinutesSinceMidnight(nowIST) < SCANNER_START_MINUTE_IST
+  ) {
+    return targetIST.getTime() - nowIST.getTime();
+  }
+
+  do {
+    targetIST.setDate(targetIST.getDate() + 1);
+    targetIST.setHours(10, 0, 0, 0);
+  } while (targetIST.getDay() === 0 || targetIST.getDay() === 6);
+
+  return targetIST.getTime() - nowIST.getTime();
+}
+
+function getNextScannerDelay() {
+  if (isScannerWindow()) {
+    return SCANNER_INTERVAL_MS;
+  }
+
+  return Math.max(60 * 1000, getDelayToNextScannerWindow());
+}
+
+function scheduleNextScannerRun(delayMs = getNextScannerDelay()) {
+  if (!scannerState.enabled) {
+    scannerState.nextRunAt = null;
+    return;
+  }
+
+  if (scannerState.timer) {
+    clearTimeout(scannerState.timer);
+  }
+
+  scannerState.nextRunAt = new Date(Date.now() + delayMs).toISOString();
+  scannerState.timer = setTimeout(() => {
+    runScannerLoop().catch((error) => {
+      console.error("Scanner loop failed:", error);
+    });
+  }, delayMs);
+}
+
+async function sendTelegramMessage(text) {
+  if (!config.telegramBotToken || !config.telegramChatId) {
+    console.warn("Telegram notification skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing.");
+    return false;
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: config.telegramChatId,
+      text,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Telegram send failed (${response.status}): ${detail}`);
+  }
+
+  return true;
+}
+
+function loadScannerStockGroups() {
+  const stockFilePath = path.join(process.cwd(), "src", "constants", "stock.js");
+  const content = fs.readFileSync(stockFilePath, "utf8");
+  const groups = {};
+
+  scannerOptions.forEach((option) => {
+    const pattern = new RegExp(`export\\s+const\\s+${option.key}\\s*=\\s*(\\[[\\s\\S]*?\\])`, "m");
+    const match = content.match(pattern);
+    if (!match) {
+      groups[option.key] = [];
+      return;
+    }
+
+    try {
+      groups[option.key] = JSON.parse(match[1].replace(/,\s*\]/g, "]"));
+    } catch (error) {
+      console.warn(`Unable to parse scanner group ${option.key}:`, error.message);
+      groups[option.key] = [];
+    }
+  });
+
+  return groups;
+}
+
+async function getNseEquityInstrumentMap() {
+  const instruments = await getInstruments();
+  const map = new Map();
+
+  instruments.forEach((instrument) => {
+    if (instrument.segment === "NSE" && instrument.instrument_type === "EQ" && instrument.name) {
+      map.set(instrument.name, instrument.instrument_token);
+    }
+  });
+
+  return map;
+}
+
+function engulfe(candles) {
+  let hit = false;
+  let buyOrSellPrice;
+  let direction;
+  let inProgress = false;
+  let isSucess = false;
+
+  for (let i = 2; i < candles.length - 6; i++) {
+    let c1 = candles[i - 1];
+    let c2 = candles[i];
+
+    let upPhase1 = c2.close > c1.high && c2.low > c1.low;
+
+    if (upPhase1) {
+      let validPullbackUp = false;
+      let hightestHigh = c2.high;
+      let crossCount = 0;
+      let dontCrossLow = c1.low;
+      let topPrice = 0;
+
+      for (let k = i + 1; k < candles.length; k++) {
+        if (candles[k - 1].high >= candles[k].high && candles[k].low >= candles[k - 1].low) {
+          break;
+        }
+        if (crossCount >= 1 && topPrice < candles[k].high) {
+          topPrice = candles[k].high;
+        } else if (crossCount >= 1 && topPrice >= candles[k].high) {
+          break;
+        }
+        if (candles[k].high > candles[k - 1].high) {
+          dontCrossLow = candles[k - 1].low;
+        }
+        if (candles[k].high > hightestHigh && !validPullbackUp) {
+          hightestHigh = candles[k].high;
+        }
+        if (candles[k].low < candles[k - 1].low) {
+          if (candles[k].high >= candles[k - 1].high) {
+            break;
+          }
+          validPullbackUp = true;
+        }
+        if (validPullbackUp && candles[k].high > hightestHigh) {
+          crossCount++;
+          topPrice = candles[k].high;
+          if (crossCount === 4) {
+            hit = true;
+            isSucess = true;
+            buyOrSellPrice = candles[k - 1].high;
+            break;
+          }
+          if (crossCount === 1 && candles[k].close < hightestHigh) {
+            inProgress = false;
+            break;
+          }
+          if (candles[k - 1].low >= candles[k].low && candles[k - 1].high <= candles[k].high) {
+            inProgress = false;
+            break;
+          }
+        }
+        if (crossCount === 2) {
+          inProgress = true;
+          direction = "up";
+        }
+        if (candles[k].low < dontCrossLow) {
+          break;
+        }
+      }
+    }
+
+    let downPhase1 = c2.close < c1.low && c2.high < c1.high;
+
+    if (downPhase1) {
+      let validPullbackDown = false;
+      let lowestLow = c2.low;
+      let crossCount = 0;
+      let dontCrossHigh = c1.high;
+      let lowestPrice = 0;
+
+      for (let k = i + 1; k < candles.length; k++) {
+        if (candles[k - 1].high >= candles[k].high && candles[k].low >= candles[k - 1].low) {
+          break;
+        }
+        if (crossCount >= 1 && lowestPrice > candles[k].low) {
+          lowestPrice = candles[k].low;
+        } else if (crossCount >= 1 && lowestPrice <= candles[k].low) {
+          break;
+        }
+        if (candles[k].low < candles[k - 1].low) {
+          dontCrossHigh = candles[k - 1].high;
+        }
+        if (candles[k].low < lowestLow && !validPullbackDown) {
+          lowestLow = candles[k].low;
+        }
+        if (candles[k].high > candles[k - 1].high) {
+          if (candles[k - 1].low >= candles[k].low) {
+            break;
+          }
+          validPullbackDown = true;
+        }
+        if (validPullbackDown && candles[k].low < lowestLow) {
+          crossCount++;
+          lowestPrice = candles[k].low;
+          if (crossCount === 4) {
+            hit = true;
+            isSucess = true;
+            buyOrSellPrice = candles[k - 1].low;
+            break;
+          }
+          if (crossCount === 1 && candles[k].close > lowestLow) {
+            inProgress = false;
+            break;
+          }
+          if (candles[k - 1].low >= candles[k].low && candles[k - 1].high <= candles[k].high) {
+            inProgress = false;
+            break;
+          }
+        }
+        if (crossCount === 2) {
+          inProgress = true;
+          direction = "down";
+        }
+        if (candles[k].high > dontCrossHigh) {
+          break;
+        }
+      }
+    }
+
+    if (hit) {
+      break;
+    }
+  }
+
+  const lastCandle = candles[candles.length - 1];
+  const target = direction === "up" ? lastCandle?.high : lastCandle?.low;
+
+  return {
+    buyOrSellPrice,
+    target,
+    profitOrLoss:
+      direction === "up"
+        ? Math.floor((target || 0) - (buyOrSellPrice || 0))
+        : Math.floor((buyOrSellPrice || 0) - (target || 0)),
+    direction,
+    time: candles[0]?.date,
+    hit,
+    inProgress,
+    isSucess,
+  };
+}
+
+async function scanStock(stock, scannerLabel) {
+  const now = new Date();
+  const range = resolveDateRange(new URLSearchParams(), "intraday", "default");
+  const candles = await getHistoricalDataCached({
+    instrumentToken: stock.instrumentToken,
+    mode: "intraday",
+    interval: INTRADAY_INTERVAL,
+    from: range.from,
+    to: range.to,
+    continuous: false,
+    oi: false,
+  });
+
+  const result = engulfe(candles || []);
+  if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) {
+    return null;
+  }
+
+  const hitKey = `${stock.name}|${result.buyOrSellPrice}`;
+  if (scannerState.notifiedHitKeys.has(hitKey)) {
+    return null;
+  }
+
+  scannerState.notifiedHitKeys.add(hitKey);
+  return {
+    name: stock.name,
+    price: result.buyOrSellPrice,
+    scannerLabel,
+    direction: result.direction,
+    hitAt: now.toISOString(),
+  };
+}
+
+async function runScannerOnce() {
+  const stockGroups = loadScannerStockGroups();
+  const instrumentMap = await getNseEquityInstrumentMap();
+  const hits = [];
+  const errors = [];
+  let scanned = 0;
+
+  for (const option of scannerOptions) {
+    const stocks = (stockGroups[option.key] || [])
+      .map((name) => ({
+        name,
+        instrumentToken: instrumentMap.get(name),
+      }))
+      .filter((stock) => stock.instrumentToken);
+
+    for (const stock of stocks) {
+      scanned += 1;
+      try {
+        const hit = await scanStock(stock, option.label);
+        if (hit) {
+          hits.push(hit);
+          await sendTelegramMessage(`${hit.name} ${hit.price}`);
+        }
+      } catch (error) {
+        const message = `${option.label} ${stock.name}: ${error.message}`;
+        errors.push(message);
+        await sendTelegramMessage(`Scanner error: ${message}`).catch((telegramError) => {
+          console.error("Unable to send scanner error to Telegram:", telegramError.message);
+        });
+      }
+    }
+  }
+
+  return {
+    scanned,
+    hits,
+    errors,
+    completedAt: new Date().toISOString(),
+  };
+}
+
+async function runScannerLoop({ force = false } = {}) {
+  if (scannerState.running) {
+    return scannerState.lastSummary;
+  }
+
+  if (!force && !isScannerWindow()) {
+    scannerState.lastSummary = {
+      skipped: true,
+      reason: "Outside scanner window",
+      completedAt: new Date().toISOString(),
+    };
+    scheduleNextScannerRun();
+    return scannerState.lastSummary;
+  }
+
+  scannerState.running = true;
+  scannerState.lastRunAt = new Date().toISOString();
+  scannerState.lastError = null;
+
+  try {
+    scannerState.lastSummary = await runScannerOnce();
+    return scannerState.lastSummary;
+  } catch (error) {
+    scannerState.lastError = error.message;
+    await sendTelegramMessage(`Scanner error: ${error.message}`).catch((telegramError) => {
+      console.error("Unable to send scanner error to Telegram:", telegramError.message);
+    });
+    throw error;
+  } finally {
+    scannerState.running = false;
+    if (scannerState.enabled) {
+      scheduleNextScannerRun();
+    }
+  }
+}
+
+function startScanner() {
+  scannerState.enabled = true;
+
+  if (!scannerState.running) {
+    scheduleNextScannerRun(isScannerWindow() ? 0 : getDelayToNextScannerWindow());
+  }
+
+  return getScannerStatus();
+}
+
+function stopScanner() {
+  scannerState.enabled = false;
+  scannerState.nextRunAt = null;
+
+  if (scannerState.timer) {
+    clearTimeout(scannerState.timer);
+    scannerState.timer = null;
+  }
+
+  return getScannerStatus();
+}
+
 function buildAuthCallbackSuccessPage() {
   const destination = config.frontendUrl || "/";
 
@@ -636,6 +1081,27 @@ const routes = {
       hasPersistedSession: Boolean(loadPersistedSession()),
       redirectUrl: config.redirectUrl || null,
       frontendUrl: config.frontendUrl || null,
+    });
+  },
+
+  async scannerStatus(req, res) {
+    sendJson(res, 200, getScannerStatus());
+  },
+
+  async scannerStart(req, res) {
+    sendJson(res, 200, startScanner());
+  },
+
+  async scannerStop(req, res) {
+    sendJson(res, 200, stopScanner());
+  },
+
+  async scannerRunOnce(req, res) {
+    const body = await parseBody(req);
+    const summary = await runScannerLoop({ force: Boolean(body.force) });
+    sendJson(res, 200, {
+      ...getScannerStatus(),
+      summary,
     });
   },
 
@@ -820,6 +1286,10 @@ const routes = {
 const router = [
   { method: "GET", pattern: /^\/api\/health\/?$/, handler: routes.health },
   { method: "GET", pattern: /^\/api\/auth\/status\/?$/, handler: routes.authStatus },
+  { method: "GET", pattern: /^\/api\/scanner\/status\/?$/, handler: routes.scannerStatus },
+  { method: "POST", pattern: /^\/api\/scanner\/start\/?$/, handler: routes.scannerStart },
+  { method: "POST", pattern: /^\/api\/scanner\/stop\/?$/, handler: routes.scannerStop },
+  { method: "POST", pattern: /^\/api\/scanner\/run-once\/?$/, handler: routes.scannerRunOnce },
   { method: "GET", pattern: /^\/api\/auth\/login-url\/?$/, handler: routes.loginUrl },
   { method: "GET", pattern: /^\/api\/auth\/login\/?$/, handler: routes.login },
   { method: "GET", pattern: /^\/api\/auth\/callback\/?$/, handler: routes.authCallback },
