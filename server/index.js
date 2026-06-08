@@ -603,6 +603,7 @@ function getScannerStatus() {
     lastSummary: scannerState.lastSummary,
     notifiedHitCount: scannerState.notifiedHitKeys.size,
     telegramConfigured: Boolean(config.telegramBotToken && config.telegramChatId),
+    telegramBotToken: config.telegramBotToken,
     intervalMs: SCANNER_INTERVAL_MS,
   };
 }
