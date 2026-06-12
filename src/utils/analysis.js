@@ -140,13 +140,17 @@ export const engulfe = (candles) => {
                     if(candles[k].high > hightestHigh) {
                         crossCount++;
                         topPrice = candles[k].high;
-                        if(crossCount === 4) {
+                        if(crossCount === 5) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].high;
                             break;
                         }
-                        if(crossCount === 1 && candles[k].close < hightestHigh) {
+                        if(crossCount === 1 && candles[k].close <= hightestHigh) {
+                            inProgress = false;
+                            break;
+                        }
+                         if(crossCount === 2 && candles[k].close <= hightestHigh) {
                             inProgress = false;
                             break;
                         }
@@ -219,13 +223,17 @@ export const engulfe = (candles) => {
                     if (candles[k].low < lowestLow) {
                         crossCount++;
                         lowestPrice = candles[k].low;
-                        if (crossCount === 4) {
+                        if (crossCount === 5) {
                             hit = true;
                             isSucess = true;
                             buyOrSellPrice = candles[k - 1].low;
                             break;
                         }
-                        if(crossCount === 1 && candles[k].close > lowestLow) {
+                        if(crossCount === 1 && candles[k].close >= lowestLow) {
+                            inProgress = false;
+                            break;
+                        }
+                        if(crossCount === 2 && candles[k].close >= lowestLow) {
                             inProgress = false;
                             break;
                         }
