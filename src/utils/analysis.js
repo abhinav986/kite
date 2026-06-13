@@ -146,10 +146,10 @@ export const engulfe = (candles) => {
                             buyOrSellPrice = candles[k - 1].high;
                             break;
                         }
-                        // if(crossCount === 1 && candles[k].close <= hightestHigh) {
-                        //     inProgress = false;
-                        //     break;
-                        // }
+                        if(crossCount === 1 && candles[k].close <= hightestHigh) {
+                            inProgress = false;
+                            break;
+                        }
                         //  if(crossCount === 2 && candles[k].close <= hightestHigh) {
                         //     inProgress = false;
                         //     break;
@@ -229,10 +229,10 @@ export const engulfe = (candles) => {
                             buyOrSellPrice = candles[k - 1].low;
                             break;
                         }
-                        // if(crossCount === 1 && candles[k].close >= lowestLow) {
-                        //     inProgress = false;
-                        //     break;
-                        // }
+                        if(crossCount === 1 && candles[k].close >= lowestLow) {
+                            inProgress = false;
+                            break;
+                        }
                         // if(crossCount === 2 && candles[k].close >= lowestLow) {
                         //     inProgress = false;
                         //     break;
