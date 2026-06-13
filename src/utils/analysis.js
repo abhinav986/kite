@@ -146,14 +146,14 @@ export const engulfe = (candles) => {
                             buyOrSellPrice = candles[k - 1].high;
                             break;
                         }
-                        if(crossCount === 1 && candles[k].close <= hightestHigh) {
-                            inProgress = false;
-                            break;
-                        }
-                         if(crossCount === 2 && candles[k].close <= hightestHigh) {
-                            inProgress = false;
-                            break;
-                        }
+                        // if(crossCount === 1 && candles[k].close <= hightestHigh) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
+                        //  if(crossCount === 2 && candles[k].close <= hightestHigh) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
                         // engulfe avoid
                         if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
                             inProgress = false;
@@ -229,14 +229,14 @@ export const engulfe = (candles) => {
                             buyOrSellPrice = candles[k - 1].low;
                             break;
                         }
-                        if(crossCount === 1 && candles[k].close >= lowestLow) {
-                            inProgress = false;
-                            break;
-                        }
-                        if(crossCount === 2 && candles[k].close >= lowestLow) {
-                            inProgress = false;
-                            break;
-                        }
+                        // if(crossCount === 1 && candles[k].close >= lowestLow) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
+                        // if(crossCount === 2 && candles[k].close >= lowestLow) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
                         // engulfe avoid
                         if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
                             inProgress = false;
