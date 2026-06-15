@@ -15,7 +15,7 @@ const INTRADAY_CACHE_TTL_MS = Number(process.env.INTRADAY_CACHE_TTL_MS || 30 * 1
 const DAY_CACHE_TTL_MS = Number(process.env.DAY_CACHE_TTL_MS || 5 * 60 * 1000);
 const SCANNER_INTERVAL_MS = Number(process.env.SCANNER_INTERVAL_MS || 5 * 60 * 1000);
 const SCANNER_START_MINUTE_IST = 10 * 60;
-const SCANNER_END_MINUTE_IST = 14 * 60 + 30;
+const SCANNER_END_MINUTE_IST = 18 * 60 + 30;
 
 const config = {
   apiKey: process.env.KITE_API_KEY,
@@ -603,7 +603,7 @@ function getScannerStatus() {
     lastSummary: scannerState.lastSummary,
     notifiedHitCount: scannerState.notifiedHitKeys.size,
     telegramConfigured: Boolean(config.telegramBotToken && config.telegramChatId),
-    telegramBotToken: config.telegramBotToken,
+    notifiedHitKeys: Array.from(scannerState.notifiedHitKeys),
     intervalMs: SCANNER_INTERVAL_MS,
   };
 }
@@ -732,155 +732,213 @@ async function getNseEquityInstrumentMap() {
   return map;
 }
 
-function engulfe(candles) {
-  let hit = false;
-  let buyOrSellPrice;
-  let direction;
-  let inProgress = false;
-  let isSucess = false;
+export const engulfe = (candles) => {
 
-  for (let i = 2; i < candles.length - 6; i++) {
-    let c1 = candles[i - 1];
-    let c2 = candles[i];
+    let hit = false;
+    let buyOrSellPrice;
+    let stopLoss = 0;
+    let direction;
+    let inProgress = false;
+    let isSucess = false;
 
-    let upPhase1 = c2.close > c1.high && c2.low > c1.low;
+    let breakoutCount = 0;
+    let breakdownCount = 0;
 
-    if (upPhase1) {
-      let validPullbackUp = false;
-      let hightestHigh = c2.high;
-      let crossCount = 0;
-      let dontCrossLow = c1.low;
-      let topPrice = 0;
+    for (let i = 2; i < candles.length - 6; i++) {
 
-      for (let k = i + 1; k < candles.length; k++) {
-        if (candles[k - 1].high >= candles[k].high && candles[k].low >= candles[k - 1].low) {
-          break;
+        let c0 = candles[i - 2];
+        let c1 = candles[i - 1];
+        let c2 = candles[i];
+
+        // =========================
+        // 🔼 UPTREND LOGIC
+        // =========================
+
+        // Phase 1: 2 strong candles
+        let upPhase1 =
+            c2.close > c1.high &&
+            c2.low > c1.low;
+
+        if (upPhase1) {
+            let validPullbackUp = false;
+            let hightestHigh = c2.high;
+            let crossCount = 0;
+            let dontCrossLow = c1.low;
+            let topPrice = 0;
+            for(let k = i + 1; k < candles.length; k++) {
+                if(candles[k-1].high >= candles[k].high && candles[k].low >= candles[k-1].low) {
+                        upPhase1 = false;
+                        break;
+                }
+                if(crossCount >= 1 && topPrice < candles[k].high) {
+                    topPrice = candles[k].high;
+                } else if(crossCount >= 1 && topPrice >= candles[k].high) {
+                    upPhase1 = false;
+                    break;
+                }
+                if(candles[k].high > candles[k-1].high ) {
+                    dontCrossLow = candles[k-1].low;
+                }
+                if(candles[k].high > hightestHigh && !validPullbackUp) {
+                    hightestHigh = candles[k].high;
+                }
+
+                if(candles[k].low < candles[k-1].low) {
+                    if(candles[k].high >= candles[k-1].high) {
+                        upPhase1 = false;
+                        break;
+                    } else {
+                        validPullbackUp = true;
+                    }
+                }
+                if(validPullbackUp) {
+                    if(candles[k].high > hightestHigh) {
+                        crossCount++;
+                        topPrice = candles[k].high;
+                        if(crossCount === 5) {
+                            hit = true;
+                            isSucess = true;
+                            buyOrSellPrice = candles[k - 1].high;
+                            break;
+                        }
+                        if(crossCount === 1 && candles[k].close <= hightestHigh) {
+                            inProgress = false;
+                            break;
+                        }
+                        //  if(crossCount === 2 && candles[k].close <= hightestHigh) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
+                        // engulfe avoid
+                        if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
+                            inProgress = false;
+                            break;
+                        }
+                    }
+                }
+                if(crossCount === 2) {
+                    inProgress = true;
+                    direction = 'up';
+                }
+                
+                
+                if(candles[k].low < dontCrossLow) {
+                    upPhase1 = false;
+                    break;
+                }
+            }
         }
-        if (crossCount >= 1 && topPrice < candles[k].high) {
-          topPrice = candles[k].high;
-        } else if (crossCount >= 1 && topPrice >= candles[k].high) {
-          break;
+
+        // =========================
+        // 🔽 DOWNTREND LOGIC
+        // =========================
+
+        let downPhase1 =
+            c2.close < c1.low &&
+            c2.high < c1.high;
+
+        if (downPhase1) {
+            let validPullbackDown = false;
+            let lowestLow = c2.low;
+            let crossCount = 0;
+            let dontCrossHigh = c1.high;
+            let lowestPrice = 0;
+            for (let k = i + 1; k < candles.length; k++) {
+                if(candles[k-1].high >= candles[k].high && candles[k].low >= candles[k-1].low) {
+                    downPhase1 = false;
+                    break;
+                }
+                if(crossCount >= 1 && lowestPrice > candles[k].low) {
+                    lowestPrice = candles[k].low;
+                } else if(crossCount >= 1 && lowestPrice <= candles[k].low) {
+                    downPhase1 = false;
+                    break;
+                }
+                // Track structure shift (lower lows → update protection high)
+                if (candles[k].low < candles[k - 1].low) {
+                    dontCrossHigh = candles[k - 1].high;
+                }
+
+                // Track lowest low before pullback
+                if (candles[k].low < lowestLow && !validPullbackDown) {
+                    lowestLow = candles[k].low;
+                }
+
+                // Pullback detection (opposite of up: higher high)
+                if (candles[k].high > candles[k - 1].high) {
+                    if(candles[k-1].low >= candles[k].low) {
+                        downPhase1 = false;
+                        break;
+                    }
+                    validPullbackDown = true;
+                }
+
+                // After pullback → continuation (breaking lows)
+                if (validPullbackDown) {
+                    if (candles[k].low < lowestLow) {
+                        crossCount++;
+                        lowestPrice = candles[k].low;
+                        if (crossCount === 5) {
+                            hit = true;
+                            isSucess = true;
+                            buyOrSellPrice = candles[k - 1].low;
+                            break;
+                        }
+                        if(crossCount === 1 && candles[k].close >= lowestLow) {
+                            inProgress = false;
+                            break;
+                        }
+                        // if(crossCount === 2 && candles[k].close >= lowestLow) {
+                        //     inProgress = false;
+                        //     break;
+                        // }
+                        // engulfe avoid
+                        if(candles[k-1].low >= candles[k].low && candles[k-1].high <= candles[k].high) {
+                            inProgress = false;
+                            break;
+                        }
+                    }
+                }
+
+                // Mark mid progress
+                if (crossCount === 2) {
+                    inProgress = true;
+                    direction = 'down';
+                }
+
+                // Invalidation condition
+                if (candles[k].high > dontCrossHigh) {
+                    downPhase1 = false;
+                    break;
+                }
+            }
         }
-        if (candles[k].high > candles[k - 1].high) {
-          dontCrossLow = candles[k - 1].low;
-        }
-        if (candles[k].high > hightestHigh && !validPullbackUp) {
-          hightestHigh = candles[k].high;
-        }
-        if (candles[k].low < candles[k - 1].low) {
-          if (candles[k].high >= candles[k - 1].high) {
-            break;
-          }
-          validPullbackUp = true;
-        }
-        if (validPullbackUp && candles[k].high > hightestHigh) {
-          crossCount++;
-          topPrice = candles[k].high;
-          if (crossCount === 4) {
-            hit = true;
-            isSucess = true;
-            buyOrSellPrice = candles[k - 1].high;
-            break;
-          }
-          if (crossCount === 1 && candles[k].close < hightestHigh) {
-            inProgress = false;
-            break;
-          }
-          if (candles[k - 1].low >= candles[k].low && candles[k - 1].high <= candles[k].high) {
-            inProgress = false;
-            break;
-          }
-        }
-        if (crossCount === 2) {
-          inProgress = true;
-          direction = "up";
-        }
-        if (candles[k].low < dontCrossLow) {
-          break;
-        }
-      }
+
+        // stop early if success
+        if (hit) break;
     }
 
-    let downPhase1 = c2.close < c1.low && c2.high < c1.high;
+    const lastCandle = candles[candles.length - 1];
 
-    if (downPhase1) {
-      let validPullbackDown = false;
-      let lowestLow = c2.low;
-      let crossCount = 0;
-      let dontCrossHigh = c1.high;
-      let lowestPrice = 0;
+    const target =
+        direction === 'up'
+            ? (lastCandle.high)
+            : (lastCandle.low);
 
-      for (let k = i + 1; k < candles.length; k++) {
-        if (candles[k - 1].high >= candles[k].high && candles[k].low >= candles[k - 1].low) {
-          break;
-        }
-        if (crossCount >= 1 && lowestPrice > candles[k].low) {
-          lowestPrice = candles[k].low;
-        } else if (crossCount >= 1 && lowestPrice <= candles[k].low) {
-          break;
-        }
-        if (candles[k].low < candles[k - 1].low) {
-          dontCrossHigh = candles[k - 1].high;
-        }
-        if (candles[k].low < lowestLow && !validPullbackDown) {
-          lowestLow = candles[k].low;
-        }
-        if (candles[k].high > candles[k - 1].high) {
-          if (candles[k - 1].low >= candles[k].low) {
-            break;
-          }
-          validPullbackDown = true;
-        }
-        if (validPullbackDown && candles[k].low < lowestLow) {
-          crossCount++;
-          lowestPrice = candles[k].low;
-          if (crossCount === 4) {
-            hit = true;
-            isSucess = true;
-            buyOrSellPrice = candles[k - 1].low;
-            break;
-          }
-          if (crossCount === 1 && candles[k].close > lowestLow) {
-            inProgress = false;
-            break;
-          }
-          if (candles[k - 1].low >= candles[k].low && candles[k - 1].high <= candles[k].high) {
-            inProgress = false;
-            break;
-          }
-        }
-        if (crossCount === 2) {
-          inProgress = true;
-          direction = "down";
-        }
-        if (candles[k].high > dontCrossHigh) {
-          break;
-        }
-      }
-    }
-
-    if (hit) {
-      break;
-    }
-  }
-
-  const lastCandle = candles[candles.length - 1];
-  const target = direction === "up" ? lastCandle?.high : lastCandle?.low;
-
-  return {
-    buyOrSellPrice,
-    target,
-    profitOrLoss:
-      direction === "up"
-        ? Math.floor((target || 0) - (buyOrSellPrice || 0))
-        : Math.floor((buyOrSellPrice || 0) - (target || 0)),
-    direction,
-    time: candles[0]?.date,
-    hit,
-    inProgress,
-    isSucess,
-  };
-}
+    return {
+        buyOrSellPrice,
+        target,
+        profitOrLoss:
+            direction === 'up'
+                ? Math.floor((target || 0) - (buyOrSellPrice || 0))
+                : Math.floor((buyOrSellPrice || 0) - (target || 0)),
+        direction,
+        time: candles[0]?.date,
+        hit,
+        inProgress,
+        isSucess,
+    };
+};
 
 async function scanStock(stock, scannerLabel) {
   const now = new Date();
