@@ -1,8 +1,8 @@
-const fs = require("fs");
-const path = require("path");
-const http = require("http");
-const { URL } = require("url");
-const { KiteConnect } = require("kiteconnect");
+import fs from "fs";
+import path from "path";
+import http from "http";
+import { URL } from "url";
+import { KiteConnect } from "kiteconnect";
 
 loadEnvFile();
 
