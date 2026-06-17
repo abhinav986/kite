@@ -285,6 +285,205 @@ export const engulfe = (candles) => {
     };
 };
 
+export const insidePullbackBreakout = (candles) => {
+    let hit = false;
+    let inProgress = false;
+    let isSucess = false;
+    let direction;
+    let buyOrSellPrice;
+    let stopLoss;
+
+    for (let i = 1; i < candles.length - 6 ; i++) {
+
+        const big1 = candles[i - 1];
+        const big2 = candles[i];
+
+        // ==================================
+        // BULLISH SETUP
+        // ==================================
+
+        let bullishImpulse =
+             big1.close > big1.open &&
+            big2.close > big2.open &&
+            big2.close > big1.high;
+
+        if (bullishImpulse) {
+             let crossCount = 0;
+             let lowestLow = candles[i + 1].low;
+             let engulfeLow = 0;
+             let engulfeFirstCandle;
+             let engulfeSecondCandle;
+            for (let j = i + 1; j <= candles.length - 1; j++) {
+                const curr = candles[j];
+                const prev = candles[j - 1];
+
+                // if(curr.low <= prev.low && curr.high >= prev.high) {
+                //     if(engulfeLow === 0 || curr.low > engulfeLow) {
+                //         engulfeLow = curr.low;
+                //     }
+                // }
+                // if(curr.low <= prev.low) {
+                //     engulfeFirstCandle = prev;
+                //     engulfeSecondCandle = curr;
+                // }
+                // if(engulfeFirstCandle && curr.high > engulfeFirstCandle.high) {
+                //     if(engulfeLow === 0 || engulfeSecondCandle.low > engulfeLow) {
+                //         engulfeLow = engulfeSecondCandle.low;
+                //     }
+                // }
+                // if(engulfeLow && curr.low < engulfeLow) {
+                //     bullishImpulse = false;
+                //     inProgress = false;
+                //     buyOrSellPrice = null;
+                //     direction = "";
+                //     break;
+                // }
+                // stay inside big candles
+                if (
+                    (curr.high >= big2.high) && !inProgress
+                ) {
+                    bullishImpulse = false;
+                    inProgress = false;
+                    buyOrSellPrice = null;
+                    direction = "";
+                    break;
+                }
+                if (
+                    (
+                    curr.low <= big1.low) && !hit
+                ) {
+                    bullishImpulse = false;
+                    inProgress = false;
+                    buyOrSellPrice = null;
+                    direction = "";
+                    break;
+                }
+                if(crossCount !== 4 && curr.low < lowestLow) {
+                    lowestLow = curr.low;
+                    crossCount = crossCount + 1;
+                }
+                if(crossCount === 4) {
+                    direction = "up";
+                    inProgress = true;
+                }
+                if(inProgress && curr.high > big2.high && crossCount === 4) {
+                    hit = true;
+                    buyOrSellPrice = big2.high;
+                    isSucess = true;
+                    break;
+                }
+                
+
+            }
+        }
+
+        // ==================================
+        // BEARISH SETUP
+        // ==================================
+
+        let bearishImpulse =
+            big1.close < big1.open &&
+            big2.close < big2.open &&
+            big2.close < big1.low;
+
+        if (bearishImpulse) {
+             let engulfeHigh = 0;
+             let engulfeFirstCandle;
+             let engulfeSecondCandle;
+           let crossCount = 0;
+             let highestHigh = candles[i + 1].high;
+            for (let j = i + 1; j <= candles.length - 1; j++) {
+                const curr = candles[j];
+                const prev = candles[j - 1];
+
+            //    if (curr.high >= prev.high && curr.low <= prev.low) {
+            //         if (engulfeHigh === 0 || curr.high < engulfeHigh) {
+            //             engulfeHigh = curr.high;
+            //         }
+            //     }
+
+            //     if (curr.high >= prev.high) {
+            //         engulfeFirstCandle = prev;
+            //         engulfeSecondCandle = curr;
+            //     }
+
+            //     if (engulfeFirstCandle && curr.low <= engulfeFirstCandle.low) {
+            //         if (engulfeHigh === 0 || engulfeSecondCandle.high < engulfeHigh) {
+            //             engulfeHigh = engulfeSecondCandle.high;
+            //         }
+            //     }
+
+            //     if (engulfeHigh && curr.high > engulfeHigh) {
+            //         bearishImpulse = false;
+            //         inProgress = false;
+            //         buyOrSellPrice = null;
+            //         direction = "";
+            //         break;
+            //     }
+                if (
+                    (
+                    curr.low <= big2.low) && !inProgress
+                ) {
+                    console.log("inside");
+                    bearishImpulse = false;
+                    inProgress = false;
+                    buyOrSellPrice = null;
+                    direction = "";
+                    break;
+                }
+                if (
+                    (curr.high >= big1.high) && !hit
+                ) {
+                    bearishImpulse = false;
+                    inProgress = false;
+                    buyOrSellPrice = null;
+                    direction = "";
+                    break;
+                }
+                if(crossCount !== 4 && curr.high > highestHigh) {
+                    highestHigh = curr.high;
+                    crossCount = crossCount + 1;
+                }
+                if(crossCount === 4) {
+                    buyOrSellPrice = big2.low;
+                    direction = "down";
+                    inProgress = true;
+                }
+                if(inProgress && curr.low < big2.low && crossCount === 4) {
+                    hit = true;
+                    isSucess = true;
+                    break;
+                }
+                
+            }
+        }
+
+        if (hit) break;
+    }
+
+    const lastCandle = candles[candles.length - 1];
+
+    const target =
+        direction === "up"
+            ? lastCandle.high
+            : lastCandle.low;
+
+    return {
+        buyOrSellPrice,
+        stopLoss,
+        target,
+        direction,
+        hit,
+        inProgress,
+        isSucess,
+        profitOrLoss:
+            direction === "up"
+                ? Math.floor((target || 0) - (buyOrSellPrice || 0))
+                : Math.floor((buyOrSellPrice || 0) - (target || 0)),
+        time: candles[0]?.date,
+    };
+};
+
 export const fourInsideOne = (candles, previousDayCandles) => {
     let lastFiveCandle = previousDayCandles?.slice(19, 24);
     const { lastDayHigh, lastDayLow } = getHighAndLow(lastFiveCandle);
