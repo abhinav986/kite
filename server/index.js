@@ -769,22 +769,22 @@ export const insidePullbackBreakout = (candles) => {
                 //         engulfeLow = curr.low;
                 //     }
                 // }
-                if(curr.low <= prev.low) {
-                    engulfeFirstCandle = prev;
-                    engulfeSecondCandle = curr;
-                }
-                if(engulfeFirstCandle && curr.high > engulfeFirstCandle.high) {
-                    if(engulfeLow === 0 || engulfeSecondCandle.low > engulfeLow) {
-                        engulfeLow = engulfeSecondCandle.low;
-                    }
-                }
-                if(engulfeLow && curr.low < engulfeLow) {
-                    bullishImpulse = false;
-                    inProgress = false;
-                    buyOrSellPrice = null;
-                    direction = "";
-                    break;
-                }
+                // if(curr.low <= prev.low) {
+                //     engulfeFirstCandle = prev;
+                //     engulfeSecondCandle = curr;
+                // }
+                // if(engulfeFirstCandle && curr.high > engulfeFirstCandle.high) {
+                //     if(engulfeLow === 0 || engulfeSecondCandle.low > engulfeLow) {
+                //         engulfeLow = engulfeSecondCandle.low;
+                //     }
+                // }
+                // if(engulfeLow && curr.low < engulfeLow) {
+                //     bullishImpulse = false;
+                //     inProgress = false;
+                //     buyOrSellPrice = null;
+                //     direction = "";
+                //     break;
+                // }
                 // stay inside big candles
                 if (
                     (curr.high >= big2.high) && !inProgress
@@ -849,35 +849,35 @@ export const insidePullbackBreakout = (candles) => {
             //         }
             //     }
 
-                if (curr.high >= prev.high) {
-                    engulfeFirstCandle = prev;
-                    engulfeSecondCandle = curr;
-                }
+                // if (curr.high >= prev.high) {
+                //     engulfeFirstCandle = prev;
+                //     engulfeSecondCandle = curr;
+                // }
 
-                if (engulfeFirstCandle && curr.low <= engulfeFirstCandle.low) {
-                    if (engulfeHigh === 0 || engulfeSecondCandle.high < engulfeHigh) {
-                        engulfeHigh = engulfeSecondCandle.high;
-                    }
-                }
+                // if (engulfeFirstCandle && curr.low <= engulfeFirstCandle.low) {
+                //     if (engulfeHigh === 0 || engulfeSecondCandle.high < engulfeHigh) {
+                //         engulfeHigh = engulfeSecondCandle.high;
+                //     }
+                // }
 
-                if (engulfeHigh && curr.high > engulfeHigh) {
-                    bearishImpulse = false;
-                    inProgress = false;
-                    buyOrSellPrice = null;
-                    direction = "";
-                    break;
-                }
-                if (
-                    (
-                    curr.low <= big2.low) && !inProgress
-                ) {
-                    console.log("inside");
-                    bearishImpulse = false;
-                    inProgress = false;
-                    buyOrSellPrice = null;
-                    direction = "";
-                    break;
-                }
+                // if (engulfeHigh && curr.high > engulfeHigh) {
+                //     bearishImpulse = false;
+                //     inProgress = false;
+                //     buyOrSellPrice = null;
+                //     direction = "";
+                //     break;
+                // }
+                // if (
+                //     (
+                //     curr.low <= big2.low) && !inProgress
+                // ) {
+                //     console.log("inside");
+                //     bearishImpulse = false;
+                //     inProgress = false;
+                //     buyOrSellPrice = null;
+                //     direction = "";
+                //     break;
+                // }
                 if (
                     (curr.high >= big1.high) && !hit
                 ) {
