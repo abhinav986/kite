@@ -402,24 +402,24 @@ export const insidePullbackBreakout = (candles) => {
             //         }
             //     }
 
-                if (curr.high >= prev.high) {
-                    engulfeFirstCandle = prev;
-                    engulfeSecondCandle = curr;
-                }
+                // if (curr.high >= prev.high) {
+                //     engulfeFirstCandle = prev;
+                //     engulfeSecondCandle = curr;
+                // }
 
-                if (engulfeFirstCandle && curr.low <= engulfeFirstCandle.low) {
-                    if (engulfeHigh === 0 || engulfeSecondCandle.high < engulfeHigh) {
-                        engulfeHigh = engulfeSecondCandle.high;
-                    }
-                }
+                // if (engulfeFirstCandle && curr.low <= engulfeFirstCandle.low) {
+                //     if (engulfeHigh === 0 || engulfeSecondCandle.high < engulfeHigh) {
+                //         engulfeHigh = engulfeSecondCandle.high;
+                //     }
+                // }
 
-                if (engulfeHigh && curr.high > engulfeHigh) {
-                    bearishImpulse = false;
-                    inProgress = false;
-                    buyOrSellPrice = null;
-                    direction = "";
-                    break;
-                }
+                // if (engulfeHigh && curr.high > engulfeHigh) {
+                //     bearishImpulse = false;
+                //     inProgress = false;
+                //     buyOrSellPrice = null;
+                //     direction = "";
+                //     break;
+                // }
                 if (
                     (
                     curr.low <= big2.low) && !inProgress
