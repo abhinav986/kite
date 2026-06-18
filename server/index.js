@@ -1152,9 +1152,12 @@ async function scanStock(stock, scannerLabel) {
     oi: false,
   });
 
-  const result = insidePullbackBreakout(candles || []);
+  let result = insidePullbackBreakout(candles || []);
   if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) {
-    return null;
+    result = engulfe(candles || []);
+    if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) {
+      return null;
+    }
   }
 
   const hitKey = `${stock.name}|${result.buyOrSellPrice}`;
