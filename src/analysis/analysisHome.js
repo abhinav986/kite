@@ -3,7 +3,7 @@ import { Box, Button, Chip, CircularProgress, Paper, Stack, Typography } from '@
 import { get } from '../utils/axios';
 import { useParams } from 'react-router-dom';
 import AnalyticsSingle from './analysisSingle';
-import { engulfe, insidePullbackBreakout } from '../utils/analysis';
+import { engulfe, insidePullbackBreakout, closingTwoEngulfe } from '../utils/analysis';
 
 const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }) => {
     const { id, name } = useParams();
@@ -127,7 +127,7 @@ const AnalyticsHome = ({ instrumentToken, stockName, embedded = false, onClose }
                             <AnalyticsSingle
                                 data={[...data]}
                                 name={decodedName}
-                                analysisFunction={insidePullbackBreakout}
+                                analysisFunction={closingTwoEngulfe}
                                 label='Engulfe total' />
                         </div>
                     )}
