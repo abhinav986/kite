@@ -1392,12 +1392,9 @@ async function scanStock(stock, scannerLabel) {
     oi: false,
   });
 
-  let result = insidePullbackBreakout(candles || []);
+  let result = closingTwoEngulfe(candles || []);
   if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) {
-    result = closingTwoEngulfe(candles || []);
-    if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) {
       return null;
-    }
   }
 
   const hitKey = `${stock.name}|${result.buyOrSellPrice}`;
