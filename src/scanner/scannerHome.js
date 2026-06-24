@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Typography } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import { basePath, get, post } from "../utils/axios";
-import { engulfe, insidePullbackBreakout, closingTwoEngulfe } from "../utils/analysis";
+import { engulfe, insidePullbackBreakout, closingTwoEngulfe, newBestTracker } from "../utils/analysis";
 import { stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70, stocks70To75_2 } from "../constants/stock";
 
 const SCANNER_OPTIONS = [
@@ -299,7 +299,7 @@ const ScannerHome = ({ embedded = false, onSelectStock }) => {
                 return;
             }
 
-            const result = closingTwoEngulfe(candles);
+            const result = newBestTracker(candles);
             if ((result.inProgress && result.isSucess && category.includes("Engulfe total")) || category.length === 0) {
                 engulfeArr.push({
                     id: engulfeArr.length + 1,
