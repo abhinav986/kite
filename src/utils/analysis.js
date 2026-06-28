@@ -950,7 +950,7 @@ export const newBestTracker = (candles) => {
                 if(downside && !firstCross && candles[j].low < lowerLimit) {
                     inProgress = true;
                     direction = "down";
-                    if(candles[j].close > lowerLimit) {
+                    if(candles[j].close < lowerLimit) {
                         firstCross = true;
                         inProgress = true;
                         buyOrSellPrice = lowerLimit;
