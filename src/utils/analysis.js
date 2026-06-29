@@ -771,7 +771,7 @@ export const newBestTracker = (candles) => {
             let secondEngulfeLow = 0;
             secondEngulfePrice = (curr.high > prev.high) && curr.high >=upperLimit ?  prev.low : secondEngulfePrice;
             for (let j = i + 1; j <= candles.length - 1; j++) {
-               if(!downSide && candles[j].low < candles[j-1].low && !(candles[j].high >= candles[j-1].high)) {
+               if(!downSide && candles[j].low < candles[j-1].low) {
                     downSide = true;
                     time = candles[j-1].date;
                     if(candles[j-1].high <= engulfeLowHigh) {
@@ -816,7 +816,7 @@ export const newBestTracker = (candles) => {
                     secondEngulfePrice = 0;
                     break;
                 }
-                if(secondEngulfe && candles[j].high > candles[j-1].high && !upside && !(candles[j].low <= candles[j-1].low)) {
+                if(secondEngulfe && candles[j].high > candles[j-1].high && !upside) {
                     inProgress = true;
                     upside = true;
                     if(secondEngulfeLow <= candles[j-1].low) {
@@ -831,7 +831,29 @@ export const newBestTracker = (candles) => {
                         break;
                     }
                 }
+                if(downSide && !upside && candles[j].high > candles[j-1].high) {
+                     inProgress = false;
+                        buyOrSellPrice = null;
+                        direction = "";
+                        engulfeLow = 0;
+                        engulfeFirstCandle = null;
+                        engulfeSecondCandle = null;
+                        upperLimit = 0;
+                        secondEngulfePrice = 0;
+                        break;
+                }
                
+                if(upside && secondEngulfe && candles[j].low < candles[j-1].low) {   
+                     inProgress = false;
+                        buyOrSellPrice = null;
+                        direction = "";
+                        engulfeLow = 0;
+                        engulfeFirstCandle = null;
+                        engulfeSecondCandle = null;
+                        upperLimit = 0;
+                        secondEngulfePrice = 0;
+                        break;
+                }
                 if(upside && !firstCross && candles[j].high > upperLimit) {
                     inProgress = true;
                     direction = "up";
@@ -886,7 +908,7 @@ export const newBestTracker = (candles) => {
             let secondEngulfeHigh = 0;
             secondEngulfePrice = (curr.low < prev.low) && curr.low <= lowerLimit ?  prev.high : secondEngulfePrice;
             for (let j = i + 1; j <= candles.length - 1; j++) {
-                if(!upside && candles[j].high > candles[j-1].high && !(candles[j].low <= candles[j-1].low)) {
+                if(!upside && candles[j].high > candles[j-1].high) {
                     upside = true;
                     time = candles[j-1].date;
                     if(candles[j-1].low >= engulfeHighLow) {
@@ -931,7 +953,7 @@ export const newBestTracker = (candles) => {
                     secondEngulfePrice = 0;
                     break;
                 }
-                if(secondEngulfe && candles[j].low < candles[j-1].low && !downside && !(candles[j].high >= candles[j-1].high)) {
+                if(secondEngulfe && candles[j].low < candles[j-1].low && !downside) {
                     inProgress = true;
                     downside = true;
                     if(secondEngulfeHigh >= candles[j-1].high) {
@@ -946,7 +968,29 @@ export const newBestTracker = (candles) => {
                         break;
                     }
                 }
+                if(upside && !downside && candles[j].low < candles[j-1].low) {
+                   inProgress = false;
+                        buyOrSellPrice = null;
+                        direction = "";
+                        engulfeHigh = 0;
+                        engulfeFirstCandleLow = null;
+                        engulfeSecondCandleLow = null;
+                        lowerLimit = 999999999999999;
+                        secondEngulfePrice = 0;
+                        break;
+                }
                
+                if(downside && secondEngulfe && candles[j].high > candles[j-1].high) {   
+                         inProgress = false;
+                        buyOrSellPrice = null;
+                        direction = "";
+                        engulfeHigh = 0;
+                        engulfeFirstCandleLow = null;
+                        engulfeSecondCandleLow = null;
+                        lowerLimit = 999999999999999;
+                        secondEngulfePrice = 0;
+                        break;
+                }
                 if(downside && !firstCross && candles[j].low < lowerLimit) {
                     inProgress = true;
                     direction = "down";
