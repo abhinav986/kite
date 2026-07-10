@@ -751,17 +751,27 @@ export const newBestTracker = (candles) => {
         const curr = candles[i];
         const prev = candles[i - 1];
        
-        if(curr.low < prev.low && !(curr.high >= prev.high)) {
-            engulfeFirstCandle = prev;
-            engulfeSecondCandle = curr;
-        }
-        if(engulfeFirstCandle && curr.close > engulfeFirstCandle.high) {
+        const isBullishEngulfing = big1.close > big1.open &&
+            big2.close > big2.open &&
+            big2.close > big1.high;
+        // if(curr.low < prev.low && !(curr.high >= prev.high)) {
+        //     engulfeFirstCandle = prev;
+        //     engulfeSecondCandle = curr;
+        // }
+        // if(engulfeFirstCandle && curr.close > engulfeFirstCandle.high) {
+        //     if(engulfeLow === 0 || engulfeSecondCandle.low > engulfeLow) {
+        //         engulfeLow = engulfeSecondCandle.low;
+        //         engulfeLowHigh = curr.high;
+        //     }
+        // }
+        if (isBullishEngulfing) {
+            engulfeFirstCandle = big1;
+            engulfeSecondCandle = big2;
             if(engulfeLow === 0 || engulfeSecondCandle.low > engulfeLow) {
                 engulfeLow = engulfeSecondCandle.low;
-                engulfeLowHigh = curr.high;
+                engulfeLowHigh = engulfeSecondCandle.high;
             }
         }
-        
         if (engulfeLow) {
             let downSide = false;
             let upside = false;
@@ -886,18 +896,30 @@ export const newBestTracker = (candles) => {
             }
         }
 
+        let bearishImpulse =
+            big1.close < big1.open &&
+            big2.close < big2.open &&
+            big2.close < big1.low;
 
-        if (curr.high > prev.high && !(curr.low <= prev.low)) {
-            engulfeFirstCandleLow = prev;
-            engulfeSecondCandleLow = curr;
-        }
-
-        if (engulfeFirstCandleLow && curr.close < engulfeFirstCandleLow.low) {
+        if(bearishImpulse) {
+            engulfeFirstCandleLow = big1;
+            engulfeSecondCandleLow = big2;
             if (engulfeHigh === 0 || engulfeSecondCandleLow.high < engulfeHigh) {
                 engulfeHigh = engulfeSecondCandleLow.high;
                 engulfeHighLow = curr.low;
-            }
+         }
         }
+        // if (curr.high > prev.high && !(curr.low <= prev.low)) {
+        //     engulfeFirstCandleLow = prev;
+        //     engulfeSecondCandleLow = curr;
+        // }
+
+        // if (engulfeFirstCandleLow && curr.close < engulfeFirstCandleLow.low) {
+        //     if (engulfeHigh === 0 || engulfeSecondCandleLow.high < engulfeHigh) {
+        //         engulfeHigh = engulfeSecondCandleLow.high;
+        //         engulfeHighLow = curr.low;
+        //     }
+        // }
 
        if (engulfeHigh) {
             let upside = false;

@@ -367,28 +367,28 @@ function getRequiredNumber(searchParams, key) {
   return parsed;
 }
 
-// function resolveDateRange(searchParams, mode) {
-//   const now = new Date();
-//   const from = searchParams.get("from");
-//   const to = searchParams.get("to");
+function resolveDateRange(searchParams, mode) {
+  const now = new Date();
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
 
-//   if (from && to) {
-//     return { from, to };
-//   }
+  if (from && to) {
+    return { from, to };
+  }
 
-//   const startOfToday = new Date("04/10/2026");
-//   startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = new Date("07/09/2026");
+  startOfToday.setHours(0, 0, 0, 0);
 
-//   // Get yesterday
-//   const yesterday = new Date(startOfToday);
-//   yesterday.setDate(startOfToday.getDate());
-//   yesterday.setHours(23, 59, 59, 999); // optional: end of yesterday
+  // Get yesterday
+  const yesterday = new Date(startOfToday);
+  yesterday.setDate(startOfToday.getDate());
+  yesterday.setHours(23, 59, 59, 999); // optional: end of yesterday
 
-//   return {
-//     from: startOfToday,
-//     to: yesterday,
-//   };
-// }
+  return {
+    from: startOfToday,
+    to: yesterday,
+  };
+}
 // Format date to Kite-required format
 function formatDate(date) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -416,58 +416,58 @@ function getISTDate(date = new Date()) {
 }
 
 // Main function
-function resolveDateRange(searchParams, mode, fallbackWindow = "default") {
-  const nowIST = getISTDate();
+// function resolveDateRange(searchParams, mode, fallbackWindow = "default") {
+//   const nowIST = getISTDate();
 
-  const fromParam = searchParams.get("from");
-  const toParam = searchParams.get("to");
+//   const fromParam = searchParams.get("from");
+//   const toParam = searchParams.get("to");
 
-  if (fromParam && toParam) {
-    return {
-      from: fromParam,
-      to: toParam,
-    };
-  }
+//   if (fromParam && toParam) {
+//     return {
+//       from: fromParam,
+//       to: toParam,
+//     };
+//   }
 
-  if (mode === "intraday" && fallbackWindow === "month") {
-    const twoMonthsAgoIST = new Date(nowIST);
-    twoMonthsAgoIST.setMonth(twoMonthsAgoIST.getMonth() - 2);
-    twoMonthsAgoIST.setHours(9, 15, 0, 0);
+//   if (mode === "intraday" && fallbackWindow === "month") {
+//     const twoMonthsAgoIST = new Date(nowIST);
+//     twoMonthsAgoIST.setMonth(twoMonthsAgoIST.getMonth() - 2);
+//     twoMonthsAgoIST.setHours(9, 15, 0, 0);
 
-    const rangeEnd = new Date(nowIST);
-    rangeEnd.setSeconds(0, 0);
+//     const rangeEnd = new Date(nowIST);
+//     rangeEnd.setSeconds(0, 0);
 
-    return {
-      from: formatDate(twoMonthsAgoIST),
-      to: formatDate(rangeEnd),
-    };
-  }
+//     return {
+//       from: formatDate(twoMonthsAgoIST),
+//       to: formatDate(rangeEnd),
+//     };
+//   }
 
-  const startOfTodayIST = new Date(nowIST);
-  startOfTodayIST.setHours(9, 15, 0, 0);
+//   const startOfTodayIST = new Date(nowIST);
+//   startOfTodayIST.setHours(9, 15, 0, 0);
 
-  // Before market open → fallback to yesterday
-  if (nowIST < startOfTodayIST) {
-    const yesterday = new Date(startOfTodayIST);
-    yesterday.setDate(yesterday.getDate() - 1);
+//   // Before market open → fallback to yesterday
+//   if (nowIST < startOfTodayIST) {
+//     const yesterday = new Date(startOfTodayIST);
+//     yesterday.setDate(yesterday.getDate() - 1);
 
-    const yesterdayStart = new Date(yesterday);
-    yesterdayStart.setHours(9, 15, 0, 0);
+//     const yesterdayStart = new Date(yesterday);
+//     yesterdayStart.setHours(9, 15, 0, 0);
 
-    const yesterdayEnd = new Date(yesterday);
-    yesterdayEnd.setHours(15, 30, 0, 0);
+//     const yesterdayEnd = new Date(yesterday);
+//     yesterdayEnd.setHours(15, 30, 0, 0);
 
-    return {
-      from: formatDate(yesterdayStart),
-      to: formatDate(yesterdayEnd),
-    };
-  }
+//     return {
+//       from: formatDate(yesterdayStart),
+//       to: formatDate(yesterdayEnd),
+//     };
+//   }
 
-  return {
-    from: formatDate(startOfTodayIST),
-    to: formatDate(nowIST),
-  };
-}
+//   return {
+//     from: formatDate(startOfTodayIST),
+//     to: formatDate(nowIST),
+//   };
+// }
 
 
 async function getInstruments(exchange) {
