@@ -18,3 +18,5 @@ yarn-error.log*
 # backtest data
 /server/backtest/data
 /server/backtest/trades.json
+/server/autotrader-mode.json
+/server/autotrader-trades.jsonl

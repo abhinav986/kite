@@ -25,7 +25,11 @@ function getArg(name, fallback) {
 const RISK_PER_TRADE = Number(getArg("risk", 1000));
 const MAX_NOTIONAL = Number(getArg("maxNotional", 500000));
 const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
-const SQUARE_OFF_MINUTE = 15 * 60 + 15; // exit at close of the 15:15 candle
+const CAPITAL = Number(getArg("capital", 300000));
+const SLOTS = Number(getArg("slots", 3));
+const VOLUME_MULTIPLE = Number(getArg("volume", 4));
+const VOLUME_LOOKBACK = 10;
+const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the auto-trader
 
 // ---------- data ----------
 
@@ -67,6 +71,15 @@ function slip(price, side, isEntry) {
   return buying ? price * (1 + SLIPPAGE) : price * (1 - SLIPPAGE);
 }
 
+// signal candle volume vs the average of the 10 candles before it (history = previous day + today)
+function volumeOk(history, idx, multiple) {
+  if (!multiple) return true;
+  if (idx < VOLUME_LOOKBACK) return false;
+  const prev = history.slice(idx - VOLUME_LOOKBACK, idx);
+  const avg = prev.reduce((sum, c) => sum + (c.volume || 0), 0) / VOLUME_LOOKBACK;
+  return avg > 0 && history[idx].volume >= multiple * avg;
+}
+
 // ---------- trade simulation ----------
 
 // Walks candles from startIdx managing one position. entryIdx candle only checks the stop.
@@ -95,11 +108,12 @@ function simulate({ candles, entryIdx, side, entry, stop, target }) {
   return { exit: last.close, reason: "time", exitIdx: candles.length - 1 };
 }
 
-// sizingRisk: per-share risk used for position size and R when the trade has no stop
-function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target, sizingRisk }) {
-  const riskPerShare = stop == null ? sizingRisk : Math.abs(entry - stop);
+// sizingRisk: per-share risk used for position size and R when the trade has no stop.
+// notional: when set, qty = notional / entry (capital-split sizing) and R is measured per 1% move.
+function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target, sizingRisk, notional }) {
+  const riskPerShare = notional ? entry * 0.01 : stop == null ? sizingRisk : Math.abs(entry - stop);
   if (!(riskPerShare > 0)) return null;
-  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
+  const qty = notional ? Math.floor(notional / entry) : Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
   if (qty < 1) return null;
 
   const result = simulate({ candles, entryIdx, side, entry, stop, target });
@@ -127,7 +141,7 @@ function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target,
 
 // ---------- strategy 1: gap reversal on first-candle break ----------
 
-function orbTrades({ symbol, day, candles, prevClose }, opts) {
+function orbTrades({ symbol, day, candles, prevClose, history, offset }, opts) {
   const c1 = candles[0];
   const c2 = candles[1];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
@@ -152,10 +166,13 @@ function orbTrades({ symbol, day, candles, prevClose }, opts) {
     entry = c2.close;
     entryIdx = 2; // in the market from the 9:25 candle
   }
+  // 2nd candle volume vs the 10 before it (1st candle + previous day's last 9).
+  // Note: live "break" entries check the 2nd candle's volume so far, which is stricter.
+  if (!volumeOk(history, offset + 1, opts.volumeMultiple)) return null;
 
   const risk = Math.abs(entry - stop);
   const target = opts.rr == null ? null : side === "short" ? entry - risk * opts.rr : entry + risk * opts.rr;
-  const trade = buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target });
+  const trade = buildTrade({ symbol, day, candles, entryIdx, side, entry, stop: opts.noStop ? null : stop, target, notional: opts.notional });
   if (trade) trade.gapPct = +gapPct.toFixed(2);
   return trade;
 }
@@ -174,7 +191,8 @@ function findEngulfeSignal(candles) {
   return null;
 }
 
-function engulfeTrade({ symbol, day, candles, signal }, opts) {
+function engulfeTrade({ symbol, day, candles, signal, history, offset }, opts) {
+  if (!volumeOk(history, offset + signal.idx, opts.volumeMultiple)) return null;
   const side = signal.direction === "up" ? "long" : "short";
   let entry;
   let entryIdx;
@@ -189,8 +207,8 @@ function engulfeTrade({ symbol, day, candles, signal }, opts) {
   }
 
   if (opts.stopPct == null) {
-    // strategy as written: no stop, held until 15:20 (sized as if risking 1%)
-    return buildTrade({ symbol, day, candles, entryIdx, side, entry, stop: null, target: null, sizingRisk: entry * 0.01 });
+    // strategy as written: no stop, held until 15:15 (sized as if risking 1%)
+    return buildTrade({ symbol, day, candles, entryIdx, side, entry, stop: null, target: null, sizingRisk: entry * 0.01, notional: opts.notional });
   }
 
   const riskPerShare = entry * (opts.stopPct / 100);
@@ -250,7 +268,13 @@ function main() {
     console.error("No data found. Run: node server/backtest/fetchData.js");
     process.exit(1);
   }
-  const files = fs.readdirSync(DATA_DIR).filter((f) => f.endsWith(".json"));
+  // only the stocks picked by the last fetchData run (older extra files are ignored)
+  const universePath = path.join(DATA_DIR, "_universe.json");
+  const universe = fs.existsSync(universePath) ? new Set(JSON.parse(fs.readFileSync(universePath, "utf8"))) : null;
+  const files = fs
+    .readdirSync(DATA_DIR)
+    .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
+    .filter((f) => !universe || universe.has(f.replace(/\.json$/, "")));
 
   const orbVariants = [];
   for (const entry of ["break", "close"]) {
@@ -263,13 +287,23 @@ function main() {
   }
 
   const engulfeVariants = [
-    { name: "ENGULFE ideal entry, no stop, exit 15:20", entry: "ideal", stopPct: null },
-    { name: "ENGULFE next-open entry, no stop, exit 15:20", entry: "next", stopPct: null },
+    { name: "ENGULFE ideal entry, no stop, exit 15:15", entry: "ideal", stopPct: null },
+    { name: "ENGULFE next-open entry, no stop, exit 15:15", entry: "next", stopPct: null },
     { name: "ENGULFE next-open, SL 0.5% RR=2", entry: "next", stopPct: 0.5, rr: 2 },
     { name: "ENGULFE next-open, SL 1% RR=2", entry: "next", stopPct: 1, rr: 2 },
-    { name: "ENGULFE next-open, SL 1% hold to 15:20", entry: "next", stopPct: 1, rr: null },
+    { name: "ENGULFE next-open, SL 1% hold to 15:15", entry: "next", stopPct: 1, rr: null },
     { name: "ENGULFE ideal entry, SL 1% RR=2", entry: "ideal", stopPct: 1, rr: 2 },
   ];
+
+  // Your live setup: balance split in SLOTS parts, no stop loss, volume >= VOLUME_MULTIPLE x last-10 average.
+  // Gap trades keep the 1:2 target (from the first-candle range); engulfe trades are held to 15:15.
+  const notional = CAPITAL / SLOTS;
+  const setupGap = { name: `SETUP gap trades: vol>=${VOLUME_MULTIPLE}x, no SL, RR=2`, entry: "break", rr: 2, minGap: 0.5, maxGap: 2, noStop: true, notional, volumeMultiple: VOLUME_MULTIPLE };
+  const setupGapNoVol = { ...setupGap, name: "SETUP gap trades: NO volume filter, no SL, RR=2", volumeMultiple: 0 };
+  const setupEngulfe = { name: `SETUP engulfe: vol>=${VOLUME_MULTIPLE}x, no SL, exit 15:15`, entry: "next", stopPct: null, notional, volumeMultiple: VOLUME_MULTIPLE };
+  const setupEngulfeNoVol = { ...setupEngulfe, name: "SETUP engulfe: NO volume filter, no SL, exit 15:15", volumeMultiple: 0 };
+  orbVariants.push(setupGap, setupGapNoVol);
+  engulfeVariants.push(setupEngulfe, setupEngulfeNoVol);
 
   const trades = Object.fromEntries([...orbVariants, ...engulfeVariants].map((v) => [v.name, []]));
   const scannerReported = [];
@@ -281,7 +315,8 @@ function main() {
     for (let d = 1; d < days.length; d += 1) {
       const { day, candles } = days[d];
       const prevCandles = days[d - 1].candles;
-      const ctx = { symbol, day, candles, prevClose: prevCandles[prevCandles.length - 1].close };
+      const history = [...prevCandles, ...candles];
+      const ctx = { symbol, day, candles, prevClose: prevCandles[prevCandles.length - 1].close, history, offset: prevCandles.length };
 
       for (const v of orbVariants) {
         const t = orbTrades(ctx, v);
@@ -300,10 +335,24 @@ function main() {
     if ((fileIdx + 1) % 20 === 0) console.log(`  processed ${fileIdx + 1}/${files.length} stocks (${Math.round((Date.now() - started) / 1000)}s)`);
   });
 
+  // Combined portfolio exactly like the auto-trader: first SLOTS trades of the day across all methods,
+  // one trade per stock per day.
+  const takeFirstPerDay = (list) => {
+    const perDay = new Map();
+    for (const t of [...list].sort((a, b) => a.time.localeCompare(b.time))) {
+      const taken = perDay.get(t.day) || [];
+      if (taken.length < SLOTS && !taken.some((x) => x.symbol === t.symbol)) taken.push(t);
+      perDay.set(t.day, taken);
+    }
+    return [...perDay.values()].flat();
+  };
+  trades[`SETUP COMBINED: first ${SLOTS} trades/day, vol>=${VOLUME_MULTIPLE}x, no SL`] = takeFirstPerDay([...trades[setupGap.name], ...trades[setupEngulfe.name]]);
+  trades[`SETUP COMBINED: first ${SLOTS} trades/day, NO volume filter, no SL`] = takeFirstPerDay([...trades[setupGapNoVol.name], ...trades[setupEngulfeNoVol.name]]);
+
   const results = {
     generatedAt: new Date().toISOString(),
     stocks: files.length,
-    settings: { riskPerTrade: RISK_PER_TRADE, maxNotional: MAX_NOTIONAL, slippagePct: SLIPPAGE * 100 },
+    settings: { riskPerTrade: RISK_PER_TRADE, maxNotional: MAX_NOTIONAL, slippagePct: SLIPPAGE * 100, capital: CAPITAL, slots: SLOTS, volumeMultiple: VOLUME_MULTIPLE },
     variants: Object.fromEntries(Object.entries(trades).map(([name, list]) => [name, summarise(list)])),
     engulfeScannerMetric: {
       note: "What the existing scanner's profitOrLoss reports: entry to the last candle's high/low (best case, no stop)",
@@ -315,7 +364,7 @@ function main() {
   fs.writeFileSync(path.join(process.cwd(), "server", "backtest", "results.json"), JSON.stringify(results, null, 2));
   fs.writeFileSync(path.join(process.cwd(), "server", "backtest", "trades.json"), JSON.stringify(trades));
 
-  console.log(`\n${files.length} stocks, risk ₹${RISK_PER_TRADE}/trade, slippage ${SLIPPAGE * 100}%/side\n`);
+  console.log(`\n${files.length} stocks, slippage ${SLIPPAGE * 100}%/side. Older variants risk ₹${RISK_PER_TRADE}/trade; SETUP variants use ₹${CAPITAL} split in ${SLOTS}\n`);
   console.table(
     Object.fromEntries(
       Object.entries(results.variants).map(([name, s]) => [

@@ -56,7 +56,7 @@ const BacktestPanel = () => {
                     <Box>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>Strategy Backtest (5-min candles)</Typography>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Gap reversal (ORB) and closingTwoEngulfe on all F&O stocks, 2 years, after Zerodha charges and slippage.
+                            Gap reversal (ORB) and closingTwoEngulfe on the 100 most liquid F&O stocks, 2 years, after Zerodha charges and slippage.
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
@@ -72,7 +72,7 @@ const BacktestPanel = () => {
                 {backtest?.running && (
                     <Box sx={{ mt: 2 }}>
                         <Typography sx={{ fontSize: 14, mb: 1 }}>
-                            {backtest.stage === "download" ? "Downloading candles from Kite (about 10 minutes the first time)..." : "Running backtest..."}
+                            {backtest.stage === "download" ? "Downloading candles from Kite (about 5 minutes the first time)..." : "Running backtest..."}
                         </Typography>
                         <LinearProgress />
                     </Box>
@@ -150,11 +150,30 @@ const BacktestPanel = () => {
                             {trader && <Chip size="small" label={trader.enabled ? "Running" : "Stopped"} color={trader.enabled ? "success" : "default"} />}
                         </Stack>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Strategies: {trader?.settings?.strategies?.join(", ") || "-"} · risk {rupees(trader?.settings?.riskPerTrade)}/trade ·
-                            max {trader?.settings?.maxTradesPerDay} trades/day · stops after {rupees(trader?.settings?.maxDailyLoss)} loss
+                            Methods: gap-up SELL, gap-down BUY, closingTwoEngulfe · balance split in {trader?.settings?.slots} parts
+                            {trader?.slotCapital ? ` (${rupees(Math.round(trader.slotCapital))} each)` : ""} · volume ≥ {trader?.settings?.volumeMultiple}x
+                            last-10 average · stop loss {trader?.settings?.useStopLoss ? "on" : "off"} · exit by 15:15
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
+                        <Button
+                            variant="outlined"
+                            color={trader?.mode === "live" ? "inherit" : "error"}
+                            disabled={!trader}
+                            onClick={() => {
+                                if (trader.mode === "live") {
+                                    call("autotrader/mode", { mode: "paper" });
+                                } else if (
+                                    window.prompt(
+                                        "LIVE mode places REAL orders with your money, with NO stop loss.\nType LIVE to confirm:"
+                                    ) === "LIVE"
+                                ) {
+                                    call("autotrader/mode", { mode: "live", confirm: "LIVE" });
+                                }
+                            }}
+                        >
+                            {trader?.mode === "live" ? "Switch to Paper" : "Switch to LIVE"}
+                        </Button>
                         <Button variant="contained" color="success" disabled={!trader || trader.enabled} onClick={() => call("autotrader/start")}>
                             Start
                         </Button>

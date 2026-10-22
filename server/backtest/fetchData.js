@@ -2,7 +2,9 @@
 // Uses the access token saved by the backend login flow (.kite-session.json), so log in via
 // http://localhost:5000/api/auth/login first. Re-running skips symbols already downloaded.
 //
-//   node server/backtest/fetchData.js [--years 2] [--symbols RELIANCE,SBIN]
+// By default only the 100 most liquid F&O stocks are downloaded (--limit to change).
+//
+//   node server/backtest/fetchData.js [--years 2] [--limit 100] [--symbols RELIANCE,SBIN]
 
 import fs from "fs";
 import path from "path";
@@ -11,6 +13,7 @@ import { KiteConnect } from "kiteconnect";
 
 const ROOT = process.cwd();
 const DATA_DIR = path.join(ROOT, "server", "backtest", "data");
+const UNIVERSE_PATH = path.join(DATA_DIR, "_universe.json");
 const CHUNK_DAYS = 90; // Kite allows max 100 days per 5minute request
 const REQUEST_GAP_MS = 350; // historical API limit is 3 req/s
 
@@ -57,6 +60,23 @@ export async function getFnoStocks(kite) {
     .map((i) => ({ symbol: i.tradingsymbol, token: i.instrument_token }));
 }
 
+// Keeps the `limit` most liquid stocks, ranked by today's traded value (volume x average price).
+async function pickMostLiquid(kite, stocks, limit) {
+  if (stocks.length <= limit) return stocks;
+  const value = new Map();
+  try {
+    for (let i = 0; i < stocks.length; i += 500) {
+      const quotes = await kite.getQuote(stocks.slice(i, i + 500).map((s) => `NSE:${s.symbol}`));
+      for (const [key, q] of Object.entries(quotes)) {
+        value.set(key.replace(/^NSE:/, ""), (q.volume || 0) * (q.average_price || q.last_price || 0));
+      }
+    }
+  } catch (error) {
+    console.warn(`Could not rank by liquidity (${error.message}); taking the first ${limit} stocks.`);
+  }
+  return [...stocks].sort((a, b) => (value.get(b.symbol) || 0) - (value.get(a.symbol) || 0)).slice(0, limit);
+}
+
 async function fetchSymbol(kite, stock, from, to) {
   const rows = [];
   for (let start = new Date(from); start < to; ) {
@@ -88,9 +108,13 @@ async function main() {
   if (only) {
     const wanted = new Set(only.split(",").map((s) => s.trim().toUpperCase()));
     stocks = stocks.filter((s) => wanted.has(s.symbol));
+  } else {
+    stocks = await pickMostLiquid(kite, stocks, Number(getArg("limit", 100)));
   }
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  // run.js only backtests the stocks listed here
+  fs.writeFileSync(UNIVERSE_PATH, JSON.stringify(stocks.map((s) => s.symbol)));
   const to = new Date();
   const from = new Date(to.getTime() - years * 365 * 86400000);
   console.log(`Downloading ${stocks.length} F&O stocks, ${from.toDateString()} -> ${to.toDateString()}`);

@@ -967,6 +967,19 @@ const routes = {
     sendJson(res, 200, autoTrader.stop());
   },
 
+  async autoTraderMode(req, res) {
+    const body = await parseBody(req);
+    if (body.mode === "live" && body.confirm !== "LIVE") {
+      sendJson(res, 400, { error: "Switching to live needs confirm: \"LIVE\"" });
+      return;
+    }
+    try {
+      sendJson(res, 200, autoTrader.setMode(body.mode));
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+  },
+
   async autoTraderSquareOff(req, res) {
     sendJson(res, 200, await autoTrader.squareOffAll());
   },
@@ -1179,6 +1192,7 @@ const router = [
   { method: "GET", pattern: /^\/api\/autotrader\/status\/?$/, handler: routes.autoTraderStatus },
   { method: "POST", pattern: /^\/api\/autotrader\/start\/?$/, handler: routes.autoTraderStart },
   { method: "POST", pattern: /^\/api\/autotrader\/stop\/?$/, handler: routes.autoTraderStop },
+  { method: "POST", pattern: /^\/api\/autotrader\/mode\/?$/, handler: routes.autoTraderMode },
   { method: "POST", pattern: /^\/api\/autotrader\/square-off\/?$/, handler: routes.autoTraderSquareOff },
   { method: "GET", pattern: /^\/api\/auth\/login-url\/?$/, handler: routes.loginUrl },
   { method: "GET", pattern: /^\/api\/auth\/login\/?$/, handler: routes.login },
