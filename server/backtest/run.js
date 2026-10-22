@@ -1,5 +1,8 @@
-// Backtests the gap-reversal opening-range strategy and closingTwoEngulfe on 5-minute candles
-// downloaded by fetchData.js. Results are printed and written to server/backtest/results.json.
+// Backtests intraday strategies on 5-minute candles downloaded by fetchData.js:
+//  - gap reversal on the first-candle break (with volume, relative-volume and Nifty filters)
+//  - previous-day high/low breakout and VWAP pullback
+//  - closingTwoEngulfe and the other signal functions from src/utils/analysis.js / analysis2.js
+// Results are printed and written to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
 //
@@ -7,12 +10,24 @@
 //  - if stop and target are both inside one candle, the stop is assumed to hit first
 //  - on the candle where an entry triggers, only the stop is checked (no target credit)
 //  - stop/market fills pay slippage; target (limit) fills do not
-//  - every position is closed by 15:20 at the latest
+//  - every position is closed by 15:15 at the latest
 //  - Zerodha equity-intraday charges are deducted from every trade
 
 import fs from "fs";
 import path from "path";
 import { closingTwoEngulfe } from "../strategies.js";
+import {
+  engulfe,
+  firstCandleCrossBothSide,
+  firstCross,
+  fourInsideOne,
+  insidePullbackBreakout,
+  newBestTracker,
+} from "../../src/utils/analysis.js";
+import { engulfeFirst } from "../../src/utils/analysis2.js";
+
+// the analysis.js helpers log every call; keep the real logger for our own output
+const print = console.log.bind(console);
 
 const DATA_DIR = path.join(process.cwd(), "server", "backtest", "data");
 const IST_OFFSET_MS = 330 * 60000;
@@ -48,6 +63,52 @@ function loadDays(file) {
   return [...days.entries()]
     .filter(([, candles]) => candles.length >= 70 && candles[0].minute === 9 * 60 + 15)
     .map(([day, candles]) => ({ day, candles }));
+}
+
+// ---------- relative volume & market ----------
+
+// RVOL: a candle's volume vs the average volume of the same 5-min slot over the previous 10 sessions.
+// cumRvol: same idea for the day's cumulative volume up to that candle.
+function buildRelativeVolume(days) {
+  const slotVolume = days.map(({ candles }) => new Map(candles.map((c) => [c.minute, c.volume])));
+  const slotCumVolume = days.map(({ candles }) => {
+    let cum = 0;
+    return new Map(candles.map((c) => [c.minute, (cum += c.volume)]));
+  });
+  const ratio = (maps, d, minute, value) => {
+    let sum = 0;
+    let n = 0;
+    for (let j = d - 1; j >= 0 && n < 10; j -= 1) {
+      const v = maps[j].get(minute);
+      if (v != null) {
+        sum += v;
+        n += 1;
+      }
+    }
+    return n >= 5 && sum > 0 ? value / (sum / n) : null;
+  };
+  return {
+    rvol: (d, k) => ratio(slotVolume, d, days[d].candles[k].minute, days[d].candles[k].volume),
+    cumRvol: (d, k) => ratio(slotCumVolume, d, days[d].candles[k].minute, slotCumVolume[d].get(days[d].candles[k].minute)),
+  };
+}
+
+// % change of Nifty 50 from the previous close to the close of the candle at `minute`
+function loadNifty() {
+  const file = path.join(DATA_DIR, "_NIFTY.json");
+  if (!fs.existsSync(file)) return () => null;
+  const days = loadDays(file);
+  const byDay = new Map();
+  days.forEach(({ day, candles }, i) => {
+    if (i === 0) return;
+    const prevCandles = days[i - 1].candles;
+    byDay.set(day, { prevClose: prevCandles[prevCandles.length - 1].close, closes: new Map(candles.map((c) => [c.minute, c.close])) });
+  });
+  return (day, minute) => {
+    const entry = byDay.get(day);
+    const close = entry?.closes.get(minute);
+    return close == null ? null : ((close - entry.prevClose) / entry.prevClose) * 100;
+  };
 }
 
 // ---------- costs ----------
@@ -141,7 +202,7 @@ function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target,
 
 // ---------- strategy 1: gap reversal on first-candle break ----------
 
-function orbTrades({ symbol, day, candles, prevClose, history, offset }, opts) {
+function orbTrades({ symbol, day, d, candles, prevClose, history, offset, rvol, niftyChange }, opts) {
   const c1 = candles[0];
   const c2 = candles[1];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
@@ -169,6 +230,13 @@ function orbTrades({ symbol, day, candles, prevClose, history, offset }, opts) {
   // 2nd candle volume vs the 10 before it (1st candle + previous day's last 9).
   // Note: live "break" entries check the 2nd candle's volume so far, which is stricter.
   if (!volumeOk(history, offset + 1, opts.volumeMultiple)) return null;
+  // 2nd candle vs the same 9:20 candle of the last 10 sessions
+  if (opts.minRvol && !(rvol(d, 1) >= opts.minRvol)) return null;
+  // fade only when the market isn't pushing the same way as the gap
+  if (opts.niftyFilter) {
+    const nifty = niftyChange(day, c2.minute);
+    if (nifty == null || (side === "short" ? nifty > 0.2 : nifty < -0.2)) return null;
+  }
 
   const risk = Math.abs(entry - stop);
   const target = opts.rr == null ? null : side === "short" ? entry - risk * opts.rr : entry + risk * opts.rr;
@@ -197,8 +265,10 @@ function engulfeTrade({ symbol, day, candles, signal, history, offset }, opts) {
   let entry;
   let entryIdx;
   if (opts.entry === "ideal") {
-    // resting stop order exactly at the signal price, as the scanner reports it
-    entry = signal.price;
+    // resting stop order exactly at the signal price, as the scanner reports it (kept inside the
+    // signal candle's range, since some functions report a level crossed earlier)
+    const c = candles[signal.idx];
+    entry = Math.min(Math.max(signal.price, c.low), c.high);
     entryIdx = signal.idx;
   } else {
     // signal noticed after the candle closes; market order at next candle open
@@ -215,6 +285,112 @@ function engulfeTrade({ symbol, day, candles, signal, history, offset }, opts) {
   const stop = side === "long" ? entry - riskPerShare : entry + riskPerShare;
   const target = opts.rr == null ? null : side === "long" ? entry + riskPerShare * opts.rr : entry - riskPerShare * opts.rr;
   return buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target });
+}
+
+// ---------- strategy 3: previous-day high/low breakout ----------
+
+// First 5-min close beyond yesterday's high (long) or low (short) between 10:00 and 13:00, entered at the
+// next candle's open, stop at the breakout candle's other end. Days where the level already broke before
+// 10:00 (or the stock opened beyond it) are skipped.
+function pdhlTrades({ symbol, day, d, candles, prevCandles, rvol }, opts) {
+  const pdh = Math.max(...prevCandles.map((c) => c.high));
+  const pdl = Math.min(...prevCandles.map((c) => c.low));
+  if (candles[0].open > pdh || candles[0].open < pdl) return null;
+
+  for (let k = 0; k < candles.length - 1; k += 1) {
+    const c = candles[k];
+    if (c.minute < 10 * 60) {
+      if (c.high > pdh || c.low < pdl) return null;
+      continue;
+    }
+    if (c.minute > 13 * 60) return null;
+    const side = c.close > pdh ? "long" : c.close < pdl ? "short" : null;
+    if (!side) continue;
+    if (opts.minRvol && !(rvol(d, k) >= opts.minRvol)) return null;
+
+    const entry = candles[k + 1].open;
+    const stop = side === "long" ? c.low : c.high;
+    const risk = side === "long" ? entry - stop : stop - entry;
+    if (!(risk > 0)) return null;
+    const target = opts.rr == null ? null : side === "long" ? entry + risk * opts.rr : entry - risk * opts.rr;
+    return buildTrade({ symbol, day, candles, entryIdx: k + 1, side, entry, stop, target });
+  }
+  return null;
+}
+
+// ---------- strategy 4: VWAP pullback ----------
+
+// After 10:00, a stock whose last 6 candles all closed above VWAP dips to VWAP and closes back above it
+// -> buy at the next open (mirror for shorts). Needs the day's volume so far to be high vs usual.
+function vwapTrades({ symbol, day, d, candles, cumRvol }, opts) {
+  const vwap = [];
+  let pv = 0;
+  let vol = 0;
+  for (const c of candles) {
+    pv += ((c.high + c.low + c.close) / 3) * c.volume;
+    vol += c.volume;
+    vwap.push(vol ? pv / vol : c.close);
+  }
+
+  for (let k = 7; k < candles.length - 1; k += 1) {
+    const c = candles[k];
+    if (c.minute < 10 * 60) continue;
+    if (c.minute > 13 * 60 + 30) return null;
+    let above = true;
+    let below = true;
+    for (let j = k - 6; j < k; j += 1) {
+      above = above && candles[j].close > vwap[j];
+      below = below && candles[j].close < vwap[j];
+    }
+    const long = above && c.low <= vwap[k] && c.close > vwap[k];
+    const short = below && c.high >= vwap[k] && c.close < vwap[k];
+    if (!long && !short) continue;
+    if (opts.minCumRvol && !(cumRvol(d, k) >= opts.minCumRvol)) continue;
+
+    const side = long ? "long" : "short";
+    const entry = candles[k + 1].open;
+    const stop = long ? Math.min(c.low, vwap[k]) * 0.999 : Math.max(c.high, vwap[k]) * 1.001;
+    const risk = long ? entry - stop : stop - entry;
+    if (!(risk > 0)) return null;
+    const target = opts.rr == null ? null : long ? entry + risk * opts.rr : entry - risk * opts.rr;
+    return buildTrade({ symbol, day, candles, entryIdx: k + 1, side, entry, stop, target });
+  }
+  return null;
+}
+
+// ---------- strategies from src/utils/analysis.js ----------
+
+const ANALYSIS_STRATEGIES = {
+  firstCandleCrossBothSide,
+  engulfe,
+  insidePullbackBreakout,
+  newBestTracker,
+  fourInsideOne,
+  firstCross,
+  engulfeFirst,
+};
+
+function safeCall(fn, candles, prevCandles) {
+  try {
+    return fn(candles, prevCandles);
+  } catch {
+    return null;
+  }
+}
+
+// First candle at which the function reports a hit, replayed candle by candle like the live scanner.
+// A full-day call screens out days with no hit first (these functions only build state forwards).
+function findAnalysisSignal(fn, candles, prevCandles) {
+  if (!safeCall(fn, candles, prevCandles)?.hit) return null;
+  for (let k = 3; k < candles.length - 1; k += 1) {
+    if (candles[k].minute >= SQUARE_OFF_MINUTE) return null;
+    const r = safeCall(fn, candles.slice(0, k + 1), prevCandles);
+    const price = Number(r?.buyOrSellPrice);
+    if (r?.hit && Number.isFinite(price) && price > 0) {
+      return { idx: k, price, direction: r.direction === "up" ? "up" : "down" };
+    }
+  }
+  return null;
 }
 
 // ---------- metrics ----------
@@ -258,6 +434,22 @@ function summarise(trades) {
     longs: { trades: longs.length, net: Math.round(sum(longs, (t) => t.net)), winRate: longs.length ? +((longs.filter((t) => t.net > 0).length / longs.length) * 100).toFixed(1) : null },
     shorts: { trades: shorts.length, net: Math.round(sum(shorts, (t) => t.net)), winRate: shorts.length ? +((shorts.filter((t) => t.net > 0).length / shorts.length) * 100).toFixed(1) : null },
     netByYear: Object.fromEntries(Object.entries(byYear).map(([y, v]) => [y, Math.round(v)])),
+    ...halves(sorted, sum, grossLoss ? grossWin / grossLoss : null),
+  };
+}
+
+// Splits the test period in two equal halves: a strategy is only a candidate if it made money in both,
+// had enough trades, and a profit factor that leaves room for worse live fills.
+let SPLIT_DAY = null;
+function halves(sorted, sum, profitFactor) {
+  const first = sorted.filter((t) => t.day < SPLIT_DAY);
+  const second = sorted.filter((t) => t.day >= SPLIT_DAY);
+  const firstHalfNet = Math.round(sum(first, (t) => t.net));
+  const secondHalfNet = Math.round(sum(second, (t) => t.net));
+  return {
+    firstHalfNet,
+    secondHalfNet,
+    candidate: sorted.length >= 100 && profitFactor >= 1.15 && firstHalfNet > 0 && secondHalfNet > 0,
   };
 }
 
@@ -305,18 +497,66 @@ function main() {
   orbVariants.push(setupGap, setupGapNoVol);
   engulfeVariants.push(setupEngulfe, setupEngulfeNoVol);
 
-  const trades = Object.fromEntries([...orbVariants, ...engulfeVariants].map((v) => [v.name, []]));
-  const scannerReported = [];
-  const started = Date.now();
+  // Suggested improvements: big-gap fade with time-of-day relative volume and a Nifty filter
+  for (const rr of [2, null]) {
+    const base = { entry: "break", rr, minGap: 2, maxGap: 100 };
+    const label = `RR=${rr ?? "EOD"}`;
+    orbVariants.push(
+      { ...base, name: `NEW gap>=2% fade, SL, ${label}` },
+      { ...base, name: `NEW gap>=2% fade, SL, ${label}, RVOL>=2`, minRvol: 2 },
+      { ...base, name: `NEW gap>=2% fade, SL, ${label}, Nifty filter`, niftyFilter: true },
+      { ...base, name: `NEW gap>=2% fade, SL, ${label}, RVOL>=2 + Nifty`, minRvol: 2, niftyFilter: true }
+    );
+  }
+  orbVariants.push({ name: "NEW gap 0.5-2% fade, SL, RR=2, RVOL>=3", entry: "break", rr: 2, minGap: 0.5, maxGap: 2, minRvol: 3 });
 
+  const pdhlVariants = [
+    { name: "NEW prev-day high/low breakout, RR=2", rr: 2 },
+    { name: "NEW prev-day high/low breakout, RR=2, RVOL>=2", rr: 2, minRvol: 2 },
+    { name: "NEW prev-day high/low breakout, EOD, RVOL>=2", rr: null, minRvol: 2 },
+  ];
+  const vwapVariants = [
+    { name: "NEW VWAP pullback, RR=2", rr: 2 },
+    { name: "NEW VWAP pullback, RR=2, day RVOL>=1.5", rr: 2, minCumRvol: 1.5 },
+    { name: "NEW VWAP pullback, EOD, day RVOL>=1.5", rr: null, minCumRvol: 1.5 },
+  ];
+  const analysisVariants = Object.keys(ANALYSIS_STRATEGIES).flatMap((key) => [
+    { key, name: `analysis.js ${key}: ideal entry, SL 1% RR=2`, entry: "ideal", stopPct: 1, rr: 2 },
+    { key, name: `analysis.js ${key}: next-open, SL 1% RR=2`, entry: "next", stopPct: 1, rr: 2 },
+  ]);
+
+  const allVariants = [...orbVariants, ...engulfeVariants, ...pdhlVariants, ...vwapVariants, ...analysisVariants];
+  const trades = Object.fromEntries(allVariants.map((v) => [v.name, []]));
+  const scannerReported = [];
+  const niftyChange = loadNifty();
+  const started = Date.now();
+  let firstDay = null;
+  let lastDay = null;
+
+  console.log = () => {}; // silence analysis.js debug logging during the run
   files.forEach((file, fileIdx) => {
     const symbol = file.replace(/\.json$/, "");
     const days = loadDays(path.join(DATA_DIR, file));
+    const { rvol, cumRvol } = buildRelativeVolume(days);
     for (let d = 1; d < days.length; d += 1) {
       const { day, candles } = days[d];
+      if (!firstDay || day < firstDay) firstDay = day;
+      if (!lastDay || day > lastDay) lastDay = day;
       const prevCandles = days[d - 1].candles;
       const history = [...prevCandles, ...candles];
-      const ctx = { symbol, day, candles, prevClose: prevCandles[prevCandles.length - 1].close, history, offset: prevCandles.length };
+      const ctx = {
+        symbol,
+        day,
+        d,
+        candles,
+        prevCandles,
+        prevClose: prevCandles[prevCandles.length - 1].close,
+        history,
+        offset: prevCandles.length,
+        rvol,
+        cumRvol,
+        niftyChange,
+      };
 
       for (const v of orbVariants) {
         const t = orbTrades(ctx, v);
@@ -331,9 +571,31 @@ function main() {
           if (t) trades[v.name].push(t);
         }
       }
+
+      for (const v of pdhlVariants) {
+        const t = pdhlTrades(ctx, v);
+        if (t) trades[v.name].push(t);
+      }
+      for (const v of vwapVariants) {
+        const t = vwapTrades(ctx, v);
+        if (t) trades[v.name].push(t);
+      }
+
+      for (const [key, fn] of Object.entries(ANALYSIS_STRATEGIES)) {
+        const s = findAnalysisSignal(fn, candles, prevCandles);
+        if (!s) continue;
+        for (const v of analysisVariants.filter((x) => x.key === key)) {
+          const t = engulfeTrade({ ...ctx, signal: s }, v);
+          if (t) trades[v.name].push(t);
+        }
+      }
     }
-    if ((fileIdx + 1) % 20 === 0) console.log(`  processed ${fileIdx + 1}/${files.length} stocks (${Math.round((Date.now() - started) / 1000)}s)`);
+    if ((fileIdx + 1) % 10 === 0) print(`  processed ${fileIdx + 1}/${files.length} stocks (${Math.round((Date.now() - started) / 1000)}s)`);
   });
+  console.log = print;
+
+  // midpoint of the tested period, for the 1st-half / 2nd-half check
+  SPLIT_DAY = new Date((Date.parse(firstDay) + Date.parse(lastDay)) / 2).toISOString().slice(0, 10);
 
   // Combined portfolio exactly like the auto-trader: first SLOTS trades of the day across all methods,
   // one trade per stock per day.
@@ -353,6 +615,7 @@ function main() {
     generatedAt: new Date().toISOString(),
     stocks: files.length,
     settings: { riskPerTrade: RISK_PER_TRADE, maxNotional: MAX_NOTIONAL, slippagePct: SLIPPAGE * 100, capital: CAPITAL, slots: SLOTS, volumeMultiple: VOLUME_MULTIPLE },
+    period: { from: firstDay, to: lastDay, splitDay: SPLIT_DAY },
     variants: Object.fromEntries(Object.entries(trades).map(([name, list]) => [name, summarise(list)])),
     engulfeScannerMetric: {
       note: "What the existing scanner's profitOrLoss reports: entry to the last candle's high/low (best case, no stop)",
@@ -369,7 +632,7 @@ function main() {
     Object.fromEntries(
       Object.entries(results.variants).map(([name, s]) => [
         name,
-        { trades: s.trades, "/day": s.tradesPerDay, "win%": s.winRate, avgR: s.avgR, "net ₹": s.netPnl, "charges ₹": s.totalCharges, PF: s.profitFactor, "maxDD ₹": s.maxDrawdown },
+        { trades: s.trades, "win%": s.winRate, avgR: s.avgR, "net ₹": s.netPnl, PF: s.profitFactor, "maxDD ₹": s.maxDrawdown, "H1 ₹": s.firstHalfNet, "H2 ₹": s.secondHalfNet, candidate: s.candidate ? "YES" : "" },
       ])
     )
   );

@@ -129,6 +129,11 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     haltedReason: null,
     lastError: null,
     events: [],
+    // paper replay
+    lastReplayKey: null,
+    replayProgress: null,
+    paperSessionDay: null,
+    notifiedPaperIds: new Set(),
   };
 
   function log(message) {
@@ -166,7 +171,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       log(`Could not read balance: ${error.message}`);
     }
     if (settings.mode === "paper" && settings.paperCapital > 0) capital = settings.paperCapital;
-    if (!(capital > 0)) throw new Error("No available balance found (set AUTOTRADE_PAPER_CAPITAL for paper mode)");
+    if (settings.mode === "paper" && !(capital > 0)) capital = 300000;
+    if (!(capital > 0)) throw new Error("No available balance found in your Kite account");
     state.capital = capital;
     state.slotCapital = capital / settings.slots;
     log(`Balance ₹${capital.toFixed(0)} split into ${settings.slots} parts of ₹${state.slotCapital.toFixed(0)} (leverage ${settings.leverage}x)`);
@@ -185,14 +191,18 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
 
   // Completed 5-min candles from the last few sessions up to uptoMinute today, so the 10-candle
   // volume average is available even early in the day.
-  async function getRecentCandles(token, uptoMinute) {
+  async function fetchCompletedCandles(token, toDateKey, toMinute) {
     await sleep(HISTORICAL_GAP_MS);
     const candles = await withKiteAuth(() =>
-      kite.getHistoricalData(token, "5minute", kiteTime(shiftDateKey(state.day, -7), 9 * 60 + 15), kiteTime(state.day, uptoMinute), false, false)
+      kite.getHistoricalData(token, "5minute", kiteTime(shiftDateKey(toDateKey, -7), 9 * 60 + 15), kiteTime(toDateKey, toMinute), false, false)
     );
     // a candle stamped hh:mm is complete at hh:mm + 5
     const nowMs = Date.now();
-    const all = (candles || []).filter((c) => new Date(c.date).getTime() + 5 * 60000 <= nowMs);
+    return (candles || []).filter((c) => new Date(c.date).getTime() + 5 * 60000 <= nowMs);
+  }
+
+  async function getRecentCandles(token, uptoMinute) {
+    const all = await fetchCompletedCandles(token, state.day, uptoMinute);
     const today = all.filter((c) => istParts(new Date(c.date)).dateKey === state.day);
     return { all, today };
   }
@@ -263,12 +273,6 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     };
     state.positions.push(position);
     const describe = `${strategy} ${long ? "BUY" : "SELL"} ${qty} ${stock.symbol} @ ~${refPrice} (${reason}) SL ${stop ?? "none"} TGT ${target ?? "15:15 exit"}`;
-
-    if (settings.mode === "paper") {
-      position.status = "open";
-      notify(describe);
-      return;
-    }
 
     try {
       const order = await withKiteAuth(() =>
@@ -444,18 +448,180 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
   }
 
-  async function managePaper(minute) {
-    const open = state.positions.filter((p) => p.status === "open");
-    if (!open.length) return;
-    const ltps = await getLtps(open.map((p) => p.symbol));
-    for (const p of open) {
-      const ltp = ltps[p.symbol];
-      if (!ltp) continue;
-      const long = p.side === "long";
-      if (p.stop != null && (long ? ltp <= p.stop : ltp >= p.stop)) closePosition(p, ltp, "stop");
-      else if (p.target != null && (long ? ltp >= p.target : ltp <= p.target)) closePosition(p, p.target, "target");
-      else if (minute >= state.settings.squareOff) closePosition(p, ltp, "square-off");
+  // ---------------- paper mode: session replay ----------------
+  // Paper trades are recomputed from candles every 5 minutes (once after market hours): every stock that
+  // met a method's conditions in the current session - or the last session when the market is closed - is
+  // shown, with no slot or trade-count limit. Sizing still uses one balance slot so P&L is comparable.
+
+  const candleMinute = (c) => istParts(new Date(c.date)).minute;
+  const candleDay = (c) => istParts(new Date(c.date)).dateKey;
+
+  function splitLastSession(all) {
+    if (!all.length) return null;
+    const day = candleDay(all[all.length - 1]);
+    const before = all.filter((c) => candleDay(c) < day);
+    const today = all.filter((c) => candleDay(c) === day);
+    const prevDay = before.length ? candleDay(before[before.length - 1]) : null;
+    return { day, today, prev: before.filter((c) => candleDay(c) === prevDay), history: [...before, ...today], offset: before.length };
+  }
+
+  function volumeAt(history, idx) {
+    return volumeCheck(history[idx].volume, averageVolume(history.slice(0, idx)));
+  }
+
+  // Walks candles from fromIdx; returns the exit, or null while the position is still open.
+  function replayExit({ today, fromIdx, side, stop, target }) {
+    const long = side === "long";
+    for (let k = fromIdx; k < today.length; k += 1) {
+      const c = today[k];
+      if (stop != null && (long ? c.low <= stop : c.high >= stop)) return { exit: stop, reason: "stop", at: c.date };
+      if (target != null && (long ? c.high >= target : c.low <= target)) return { exit: target, reason: "target", at: c.date };
+      if (candleMinute(c) + 5 >= state.settings.squareOff) return { exit: c.close, reason: "square-off", at: c.date };
     }
+    return null;
+  }
+
+  function paperPosition({ stock, session, strategy, side, entryIdx, fromIdx, entry, refDistance, rr, reason, ltp }) {
+    const { settings } = state;
+    const long = side === "long";
+    const qty = Math.max(1, Math.floor((state.slotCapital * settings.leverage) / entry));
+    const stop = settings.useStopLoss ? roundToTick(long ? entry - refDistance : entry + refDistance, stock.tick, long ? "down" : "up") : null;
+    const target = rr > 0 ? roundToTick(long ? entry + refDistance * rr : entry - refDistance * rr, stock.tick, long ? "up" : "down") : null;
+    const exit = replayExit({ today: session.today, fromIdx, side, stop, target });
+    const mark = exit ? exit.exit : ltp ?? session.today[session.today.length - 1].close;
+    return {
+      id: `${session.day}-${stock.symbol}-${strategy}`,
+      day: session.day,
+      strategy,
+      symbol: stock.symbol,
+      side,
+      qty,
+      entry: +entry.toFixed(2),
+      stop,
+      target,
+      reason,
+      time: session.today[entryIdx].date,
+      status: exit ? "closed" : "open",
+      exit: exit ? +exit.exit.toFixed(2) : null,
+      exitReason: exit?.reason,
+      closedAt: exit?.at,
+      lastPrice: mark,
+      pnl: +((long ? mark - entry : entry - mark) * qty).toFixed(2),
+    };
+  }
+
+  function replayGap(stock, session) {
+    const { settings } = state;
+    const [c1, c2] = session.today;
+    if (!c1 || !c2 || !session.prev.length) return null;
+    const prevClose = session.prev[session.prev.length - 1].close;
+    const gapPct = ((c1.open - prevClose) / prevClose) * 100;
+    if (Math.abs(gapPct) < settings.orbMinGapPct || Math.abs(gapPct) >= settings.orbMaxGapPct) return null;
+
+    const side = gapPct > 0 ? "short" : "long";
+    const level = side === "short" ? c1.low : c1.high;
+    let entry;
+    if (settings.orbEntry === "break") {
+      if (!(side === "short" ? c2.low < level : c2.high > level)) return null;
+      entry = side === "short" ? Math.min(level, c2.open) : Math.max(level, c2.open);
+    } else {
+      if (!(side === "short" ? c2.close < level : c2.close > level)) return null;
+      entry = c2.close;
+    }
+    const vol = volumeAt(session.history, session.offset + 1);
+    if (!vol.ok) return null;
+    return paperPosition({
+      stock,
+      session,
+      strategy: side === "short" ? "GAP-UP SELL" : "GAP-DOWN BUY",
+      side,
+      entryIdx: 1,
+      fromIdx: 2,
+      entry,
+      refDistance: c1.high - c1.low,
+      rr: settings.orbRR,
+      reason: `gap ${gapPct.toFixed(2)}%, ${vol.text}`,
+    });
+  }
+
+  function replayEngulfe(stock, session, ltp) {
+    const { settings } = state;
+    const { today } = session;
+    for (let k = 8; k < today.length; k += 1) {
+      if (candleMinute(today[k]) + 5 > settings.lastEntry) return null;
+      const result = closingTwoEngulfe(today.slice(0, k + 1));
+      if (!result.hit || !Number.isFinite(Number(result.buyOrSellPrice))) continue;
+      const vol = volumeAt(session.history, session.offset + k);
+      if (!vol.ok) return null;
+      // entered at the next candle's open; if that candle hasn't formed yet, at the current price
+      const next = today[k + 1];
+      const entry = next ? next.open : ltp;
+      if (!entry) return null;
+      return paperPosition({
+        stock,
+        session,
+        strategy: "ENGULFE",
+        side: result.direction === "up" ? "long" : "short",
+        entryIdx: next ? k + 1 : k,
+        fromIdx: next ? k + 1 : today.length,
+        entry,
+        refDistance: entry * (settings.engulfeStopPct / 100),
+        rr: settings.engulfeRR,
+        reason: vol.text,
+        ltp,
+      });
+    }
+    return null;
+  }
+
+  async function replayPaperSession(now, marketOpen) {
+    const { strategies } = state.settings;
+    const ltps = marketOpen ? await getLtps(state.universe.map((s) => s.symbol)).catch(() => ({})) : {};
+    const positions = [];
+    let done = 0;
+    for (const stock of state.universe) {
+      done += 1;
+      state.replayProgress = `${done}/${state.universe.length}`;
+      let session;
+      try {
+        session = splitLastSession(await fetchCompletedCandles(stock.token, now.dateKey, Math.min(now.minute, 15 * 60 + 30)));
+      } catch (error) {
+        log(`${stock.symbol}: candle fetch failed - ${error.message}`);
+        continue;
+      }
+      if (!session || session.today.length < 2) continue;
+      if (strategies.includes("orb")) {
+        const p = replayGap(stock, session);
+        if (p) positions.push(p);
+      }
+      if (strategies.includes("engulfe")) {
+        const p = replayEngulfe(stock, session, ltps[stock.symbol]);
+        if (p) positions.push(p);
+      }
+    }
+    state.replayProgress = null;
+
+    positions.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    for (const p of positions) {
+      if (state.notifiedPaperIds.has(p.id)) continue;
+      state.notifiedPaperIds.add(p.id);
+      const text = `${p.strategy} ${p.side === "long" ? "BUY" : "SELL"} ${p.qty} ${p.symbol} @ ${p.entry} (${p.reason})`;
+      if (marketOpen) notify(text);
+      else log(text);
+    }
+    state.positions = positions;
+    state.realisedPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
+    state.paperSessionDay = positions[0]?.day || state.paperSessionDay;
+    log(`Paper replay done: ${positions.length} trades met the conditions (${positions.filter((p) => p.status === "open").length} still open)`);
+  }
+
+  async function paperTick(now) {
+    const marketOpen = now.weekday >= 1 && now.weekday <= 5 && now.minute >= 9 * 60 + 15 && now.minute <= 15 * 60 + 30;
+    // during market hours: once per completed 5-min candle; otherwise once per calendar day
+    const key = marketOpen ? `${now.dateKey}-${now.minute - (now.minute % 5)}` : `closed-${now.dateKey}`;
+    if (key === state.lastReplayKey || (marketOpen && now.second < 5)) return;
+    state.lastReplayKey = key;
+    await replayPaperSession(now, marketOpen);
   }
 
   async function placeExitOrders(p) {
@@ -555,15 +721,23 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     state.busy = true;
     try {
       const now = istNow();
-      if (now.weekday === 0 || now.weekday === 6) return;
       if (state.day !== now.dateKey) resetDay(now.dateKey);
+
+      if (state.settings.mode === "paper") {
+        if (!state.universe.length) await loadUniverse();
+        if (state.capital == null) await loadCapital();
+        await paperTick(now);
+        state.lastError = null;
+        return;
+      }
+
+      if (now.weekday === 0 || now.weekday === 6) return;
       if (now.minute < 9 * 60 + 15 || now.minute > 15 * 60 + 30) return;
       if (!state.universe.length) await loadUniverse();
       if (state.capital == null) await loadCapital();
 
       const { settings } = state;
-      if (settings.mode === "live") await manageLive(now.minute);
-      else await managePaper(now.minute);
+      await manageLive(now.minute);
 
       if (now.minute >= settings.squareOff) return;
 
@@ -597,6 +771,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     start() {
       state.settings = readSettings();
       state.capital = null;
+      state.lastReplayKey = null;
       state.enabled = true;
       if (!state.timer) state.timer = setInterval(tick, TICK_MS);
       notify(`Started. Methods: ${state.settings.strategies.join(", ")}, ${state.settings.slots} slots, stop loss ${state.settings.useStopLoss ? "on" : "off"}`);
@@ -612,10 +787,13 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     },
     setMode(mode) {
       if (mode !== "live" && mode !== "paper") throw new Error("mode must be 'live' or 'paper'");
-      if (activePositions().length) throw new Error("Close open positions before switching mode");
+      if (state.settings.mode === "live" && activePositions().length) throw new Error("Close open live positions before switching mode");
       fs.writeFileSync(MODE_PATH, JSON.stringify({ mode, changedAt: new Date().toISOString() }));
       state.settings = readSettings();
       state.capital = null;
+      state.positions = [];
+      state.realisedPnl = 0;
+      state.lastReplayKey = null;
       notify(`Mode switched to ${mode.toUpperCase()}`);
       return this.status();
     },
@@ -626,10 +804,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         const orders = await withKiteAuth(() => kite.getOrders());
         const byId = new Map(orders.map((o) => [o.order_id, o]));
         for (const p of active) await squareOffLive(p, byId);
-      } else {
-        const ltps = await getLtps(active.map((p) => p.symbol));
-        for (const p of active) closePosition(p, ltps[p.symbol] ?? p.entry, "manual square-off");
       }
+      // paper trades are a replay of the session; nothing to close
       return this.status();
     },
     status() {
@@ -645,6 +821,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         realisedPnl: +state.realisedPnl.toFixed(2),
         positions: state.positions,
         orbCandidates: state.orbCandidates,
+        replayProgress: state.replayProgress,
+        paperSessionDay: state.paperSessionDay,
         lastError: state.lastError,
         recentEvents: state.events.slice(-30),
       };

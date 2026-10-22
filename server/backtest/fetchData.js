@@ -14,6 +14,7 @@ import { KiteConnect } from "kiteconnect";
 const ROOT = process.cwd();
 const DATA_DIR = path.join(ROOT, "server", "backtest", "data");
 const UNIVERSE_PATH = path.join(DATA_DIR, "_universe.json");
+const NIFTY_TOKEN = 256265; // NSE:NIFTY 50 index
 const CHUNK_DAYS = 90; // Kite allows max 100 days per 5minute request
 const REQUEST_GAP_MS = 350; // historical API limit is 3 req/s
 
@@ -118,6 +119,14 @@ async function main() {
   const to = new Date();
   const from = new Date(to.getTime() - years * 365 * 86400000);
   console.log(`Downloading ${stocks.length} F&O stocks, ${from.toDateString()} -> ${to.toDateString()}`);
+
+  // Nifty 50 index candles for the market-direction filter
+  const niftyFile = path.join(DATA_DIR, "_NIFTY.json");
+  if (!fs.existsSync(niftyFile)) {
+    const rows = await fetchSymbol(kite, { symbol: "NIFTY 50", token: NIFTY_TOKEN }, from, to);
+    fs.writeFileSync(niftyFile, JSON.stringify(rows));
+    console.log(`NIFTY 50: ${rows.length} candles`);
+  }
 
   let done = 0;
   for (const stock of stocks) {

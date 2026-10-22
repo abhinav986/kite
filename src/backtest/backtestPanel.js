@@ -45,7 +45,10 @@ const BacktestPanel = () => {
     };
 
     const results = backtest?.results;
-    const variants = results ? Object.entries(results.variants) : [];
+    // candidates first, then by net P&L
+    const variants = results
+        ? Object.entries(results.variants).sort(([, a], [, b]) => (b.candidate ? 1 : 0) - (a.candidate ? 1 : 0) || (b.netPnl ?? -Infinity) - (a.netPnl ?? -Infinity))
+        : [];
 
     return (
         <Stack spacing={3}>
@@ -106,13 +109,18 @@ const BacktestPanel = () => {
                                         <TableCell align="right">Charges</TableCell>
                                         <TableCell align="right">Profit factor</TableCell>
                                         <TableCell align="right">Max drawdown</TableCell>
+                                        <TableCell align="right">1st half</TableCell>
+                                        <TableCell align="right">2nd half</TableCell>
                                         <TableCell>Net by year</TableCell>
                                     </TableRow>
                                 </TableHead>
                                 <TableBody>
                                     {variants.map(([name, s]) => (
-                                        <TableRow key={name}>
-                                            <TableCell sx={{ fontWeight: 600 }}>{name}</TableCell>
+                                        <TableRow key={name} sx={s.candidate ? { backgroundColor: "rgba(21, 128, 61, 0.08)" } : undefined}>
+                                            <TableCell sx={{ fontWeight: 600 }}>
+                                                {s.candidate && <Chip size="small" color="success" label="candidate" sx={{ mr: 1 }} />}
+                                                {name}
+                                            </TableCell>
                                             <TableCell align="right">{s.trades}</TableCell>
                                             <TableCell align="right">{s.winRate ?? "-"}</TableCell>
                                             <TableCell align="right" sx={{ color: pnlColor(s.avgR) }}>{s.avgR ?? "-"}</TableCell>
@@ -120,6 +128,8 @@ const BacktestPanel = () => {
                                             <TableCell align="right">{rupees(s.totalCharges)}</TableCell>
                                             <TableCell align="right">{s.profitFactor ?? "-"}</TableCell>
                                             <TableCell align="right">{rupees(s.maxDrawdown)}</TableCell>
+                                            <TableCell align="right" sx={{ color: pnlColor(s.firstHalfNet) }}>{rupees(s.firstHalfNet)}</TableCell>
+                                            <TableCell align="right" sx={{ color: pnlColor(s.secondHalfNet) }}>{rupees(s.secondHalfNet)}</TableCell>
                                             <TableCell sx={{ fontSize: 12 }}>
                                                 {s.netByYear ? Object.entries(s.netByYear).map(([y, v]) => `${y}: ${rupees(v)}`).join(" · ") : "-"}
                                             </TableCell>
@@ -129,7 +139,8 @@ const BacktestPanel = () => {
                             </Table>
                         </TableContainer>
                         <Typography sx={{ fontSize: 12, color: "#64748b", mt: 1 }}>
-                            Avg R above 0 and profit factor above 1.2 in both years is the minimum before trusting a strategy. Past results do not guarantee future profit.
+                            "candidate" = at least 100 trades, profit factor ≥ 1.15, and profit in both halves of the period ({results.period?.splitDay ? `split at ${results.period.splitDay}` : "split by date"}).
+                            That is the minimum before paper trading a strategy, not a guarantee of future profit.
                         </Typography>
                     </Box>
                 )}
@@ -192,9 +203,28 @@ const BacktestPanel = () => {
 
                 {trader && (
                     <Box sx={{ mt: 2 }}>
-                        <Typography sx={{ fontWeight: 700, color: pnlColor(trader.realisedPnl) }}>
-                            Today's realised P&L: {rupees(trader.realisedPnl)}
-                        </Typography>
+                        {trader.mode === "paper" ? (
+                            <>
+                                <Typography sx={{ fontSize: 13, color: "#475569" }}>
+                                    Paper shows every stock that met the conditions (no 3-trade limit), refreshed every 5 minutes.
+                                    After market hours it replays the last session. Each trade is sized at ⅓ of the balance.
+                                </Typography>
+                                {trader.replayProgress && (
+                                    <Box sx={{ mt: 1 }}>
+                                        <Typography sx={{ fontSize: 13 }}>Scanning stocks {trader.replayProgress}...</Typography>
+                                        <LinearProgress />
+                                    </Box>
+                                )}
+                                <Typography sx={{ mt: 1, fontWeight: 700, color: pnlColor(trader.realisedPnl) }}>
+                                    Paper P&L{trader.paperSessionDay ? ` for ${trader.paperSessionDay}` : ""} ({trader.positions?.length || 0} trades):{" "}
+                                    {rupees(Math.round(trader.realisedPnl))}
+                                </Typography>
+                            </>
+                        ) : (
+                            <Typography sx={{ fontWeight: 700, color: pnlColor(trader.realisedPnl) }}>
+                                Today's realised P&L: {rupees(trader.realisedPnl)}
+                            </Typography>
+                        )}
                         {trader.haltedReason && <Alert severity="warning" sx={{ mt: 1 }}>{trader.haltedReason}</Alert>}
                         {trader.lastError && <Alert severity="error" sx={{ mt: 1 }}>{trader.lastError}</Alert>}
 
@@ -203,6 +233,7 @@ const BacktestPanel = () => {
                                 <Table size="small">
                                     <TableHead>
                                         <TableRow>
+                                            <TableCell>Time</TableCell>
                                             <TableCell>Stock</TableCell>
                                             <TableCell>Strategy</TableCell>
                                             <TableCell>Side</TableCell>
@@ -210,13 +241,18 @@ const BacktestPanel = () => {
                                             <TableCell align="right">Entry</TableCell>
                                             <TableCell align="right">Stop</TableCell>
                                             <TableCell align="right">Target</TableCell>
+                                            <TableCell align="right">Exit / Last</TableCell>
                                             <TableCell>Status</TableCell>
                                             <TableCell align="right">P&L</TableCell>
+                                            <TableCell>Why</TableCell>
                                         </TableRow>
                                     </TableHead>
                                     <TableBody>
                                         {trader.positions.map((p) => (
                                             <TableRow key={p.id}>
+                                                <TableCell>
+                                                    {new Date(p.time || p.openedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                                                </TableCell>
                                                 <TableCell sx={{ fontWeight: 600 }}>{p.symbol}</TableCell>
                                                 <TableCell>{p.strategy}</TableCell>
                                                 <TableCell>{p.side === "long" ? "BUY" : "SELL"}</TableCell>
@@ -224,8 +260,10 @@ const BacktestPanel = () => {
                                                 <TableCell align="right">{p.entry}</TableCell>
                                                 <TableCell align="right">{p.stop}</TableCell>
                                                 <TableCell align="right">{p.target}</TableCell>
+                                                <TableCell align="right">{p.exit ?? p.lastPrice ?? "-"}</TableCell>
                                                 <TableCell>{p.status}{p.exitReason ? ` (${p.exitReason})` : ""}</TableCell>
                                                 <TableCell align="right" sx={{ color: pnlColor(p.pnl) }}>{p.pnl != null ? rupees(p.pnl) : "-"}</TableCell>
+                                                <TableCell sx={{ fontSize: 12, color: "#64748b" }}>{p.reason}</TableCell>
                                             </TableRow>
                                         ))}
                                     </TableBody>
