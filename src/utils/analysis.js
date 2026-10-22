@@ -892,17 +892,17 @@ export const newBestTracker = (candles) => {
                         upperLimit = candles[j].high;
                         crossCount = crossCount + 1;
                     } else {
-                        // if(upperLimit > candles[j].high) {
-                        //     inProgress = false;
-                        //     buyOrSellPrice = null;
-                        //     direction = "";
-                        //     engulfeLow = 0;
-                        //     engulfeFirstCandle = null;
-                        //     engulfeSecondCandle = null;
-                        //     upperLimit = 0;
-                        //     secondEngulfePrice = 0;
-                        //     break;
-                        // }
+                        if(crossCount !== 1) {
+                            inProgress = false;
+                            buyOrSellPrice = null;
+                            direction = "";
+                            engulfeLow = 0;
+                            engulfeFirstCandle = null;
+                            engulfeSecondCandle = null;
+                            upperLimit = 0;
+                            secondEngulfePrice = 0;
+                            break;
+                        }
                     }
                     if(crossCount === 3) {
                         inProgress = true;
@@ -1067,15 +1067,18 @@ export const newBestTracker = (candles) => {
                         lowerLimit = candles[j].low;
                         crossCount = crossCount + 1;
                     } else {
-                        //  inProgress = false;
-                        // buyOrSellPrice = null;
-                        // direction = "";
-                        // engulfeHigh = 0;
-                        // engulfeFirstCandleLow = null;
-                        // engulfeSecondCandleLow = null;
-                        // lowerLimit = 9999999999999;
-                        // secondEngulfePrice = 0;
-                        // break;
+                        if(crossCount !== 1) {
+                            inProgress = false;
+                            buyOrSellPrice = null;
+                            direction = "";
+                            engulfeHigh = 0;
+                            engulfeFirstCandleLow = null;
+                            engulfeSecondCandleLow = null;
+                            lowerLimit = 9999999999999;
+                            secondEngulfePrice = 0;
+                            break;
+                        }
+                        
                     }
                     if(crossCount === 3) {
                         inProgress = true;
