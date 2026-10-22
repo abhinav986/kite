@@ -443,14 +443,15 @@ function summarise(trades) {
     longs: { trades: longs.length, net: Math.round(sum(longs, (t) => t.net)), winRate: longs.length ? +((longs.filter((t) => t.net > 0).length / longs.length) * 100).toFixed(1) : null },
     shorts: { trades: shorts.length, net: Math.round(sum(shorts, (t) => t.net)), winRate: shorts.length ? +((shorts.filter((t) => t.net > 0).length / shorts.length) * 100).toFixed(1) : null },
     netByYear: Object.fromEntries(Object.entries(byYear).map(([y, v]) => [y, Math.round(v)])),
-    ...halves(sorted, sum, grossLoss ? grossWin / grossLoss : null),
+    ...halves(sorted, sum, grossLoss ? grossWin / grossLoss : null, Object.values(byYear)),
   };
 }
 
-// Splits the test period in two equal halves: a strategy is only a candidate if it made money in both,
-// had enough trades, and a profit factor that leaves room for worse live fills.
+// Splits the test period in two equal halves: a strategy is only a candidate if it made money in both halves
+// and in every calendar year (one strong year can carry both halves), had enough trades, and a profit
+// factor that leaves room for worse live fills.
 let SPLIT_DAY = null;
-function halves(sorted, sum, profitFactor) {
+function halves(sorted, sum, profitFactor, yearlyNet) {
   const first = sorted.filter((t) => t.day < SPLIT_DAY);
   const second = sorted.filter((t) => t.day >= SPLIT_DAY);
   const firstHalfNet = Math.round(sum(first, (t) => t.net));
@@ -458,7 +459,8 @@ function halves(sorted, sum, profitFactor) {
   return {
     firstHalfNet,
     secondHalfNet,
-    candidate: sorted.length >= 100 && profitFactor >= 1.15 && firstHalfNet > 0 && secondHalfNet > 0,
+    candidate:
+      sorted.length >= 100 && profitFactor >= 1.15 && firstHalfNet > 0 && secondHalfNet > 0 && yearlyNet.every((net) => net > 0),
   };
 }
 

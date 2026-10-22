@@ -2,7 +2,7 @@
 //
 // Default method (the only backtest candidate, see server/backtest/run.js "NEW gap>=2% fade ... Nifty filter"):
 //  - gap-up SELL:   stock opens >= 2% above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low,
-//                   while Nifty is not up more than 0.2%. Stop = 1st candle's high.
+//                   while Nifty is not up more than 0.4%. Stop = 1st candle's high.
 //  - gap-down BUY:  mirror image. Stop = 1st candle's low.
 //  Held until the stop or AUTOTRADE_SQUARE_OFF (default 15:15).
 // Optional (AUTOTRADE_STRATEGIES=orb,engulfe): closingTwoEngulfe - it lost money in every backtest variant.
@@ -67,7 +67,8 @@ function readSettings() {
     useStopLoss: process.env.AUTOTRADE_USE_STOP_LOSS !== "false",
     volumeMultiple: envNumber("AUTOTRADE_VOLUME_MULTIPLE", 0), // 0 = off
     niftyFilter: process.env.AUTOTRADE_NIFTY_FILTER !== "false",
-    niftyMaxAgainstPct: envNumber("AUTOTRADE_NIFTY_MAX_AGAINST_PCT", 0.2),
+    // 0.4% backtested better than 0.2%: +45 trades over 2 years, positive in every year, PF 2.44 overall
+    niftyMaxAgainstPct: envNumber("AUTOTRADE_NIFTY_MAX_AGAINST_PCT", 0.4),
     maxTradesPerDay: envNumber("AUTOTRADE_MAX_TRADES_PER_DAY", slots),
     maxDailyLoss: envNumber("AUTOTRADE_MAX_DAILY_LOSS", 0), // 0 = off
     orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 2),
@@ -140,6 +141,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     replayProgress: null,
     paperSessionDay: null,
     notifiedPaperIds: new Set(),
+    notifiedExitIds: new Set(),
+    dateJobs: new Map(), // dateKey -> past-date scan (date picker)
   };
 
   function log(message) {
@@ -202,8 +205,17 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
 
   // Completed 5-min candles from the last few sessions up to uptoMinute today, so the 10-candle
   // volume average is available even early in the day.
+  // one shared queue so concurrent scans (live + a past date) stay under the historical API rate limit
+  let nextHistoricalSlot = 0;
+  async function throttleHistorical() {
+    const now = Date.now();
+    const wait = Math.max(0, nextHistoricalSlot - now);
+    nextHistoricalSlot = Math.max(now, nextHistoricalSlot) + HISTORICAL_GAP_MS;
+    await sleep(wait);
+  }
+
   async function fetchCompletedCandles(token, toDateKey, toMinute) {
-    await sleep(HISTORICAL_GAP_MS);
+    await throttleHistorical();
     const candles = await withKiteAuth(() =>
       kite.getHistoricalData(token, "5minute", kiteTime(shiftDateKey(toDateKey, -7), 9 * 60 + 15), kiteTime(toDateKey, toMinute), false, false)
     );
@@ -238,7 +250,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return ((q.last_price - q.ohlc.close) / q.ohlc.close) * 100;
   }
 
-  // Fade a gap only when the market isn't pushing the same way (backtested at +/-0.2%)
+  // Fade a gap only when the market isn't pushing the same way (backtested at 0.2% and 0.4%)
   function niftyCheck(side, change) {
     const { niftyFilter, niftyMaxAgainstPct } = state.settings;
     if (!niftyFilter) return { ok: true, text: "" };
@@ -643,15 +655,18 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
   }
 
-  async function replayPaperSession(now, marketOpen) {
+  // Replays the session ending at `now` ({ dateKey, minute }) for every stock and returns the signals.
+  // requireDay: only accept that exact date (the date picker), so holidays return nothing.
+  async function computeSessionSignals(now, { marketOpen = false, requireDay = null, onProgress } = {}) {
     const { strategies } = state.settings;
     const ltps = marketOpen ? await getLtps(state.universe.map((s) => s.symbol)).catch(() => ({})) : {};
     const niftyChangeAt = await loadNiftyChangeAt(now);
     const positions = [];
+    let day = null;
     let done = 0;
     for (const stock of state.universe) {
       done += 1;
-      state.replayProgress = `${done}/${state.universe.length}`;
+      onProgress?.(`${done}/${state.universe.length}`);
       let session;
       try {
         session = splitLastSession(await fetchCompletedCandles(stock.token, now.dateKey, Math.min(now.minute, 15 * 60 + 30)));
@@ -660,6 +675,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         continue;
       }
       if (!session || session.today.length < 2) continue;
+      if (requireDay && session.day !== requireDay) continue;
+      day = session.day;
       if (strategies.includes("orb")) {
         const p = replayGap(stock, session, niftyChangeAt);
         if (p) positions.push(p);
@@ -669,29 +686,140 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         if (p) positions.push(p);
       }
     }
-    state.replayProgress = null;
-
     positions.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    return { day, positions };
+  }
+
+  // ---------------- Telegram alerts ----------------
+
+  const money = (n) => `₹${Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const clock = (date) => {
+    const { minute } = istParts(new Date(date));
+    return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+  };
+
+  function sendAlert(text) {
+    log(text.split("\n")[0]);
+    sendTelegramMessage(text).catch((error) => log(`Telegram alert failed: ${error.message}`));
+  }
+
+  // One alert per new signal and one when it exits (stop hit or 15:15), for today's session only.
+  function sendSignalAlerts(positions) {
     for (const p of positions) {
-      if (state.notifiedPaperIds.has(p.id)) continue;
-      state.notifiedPaperIds.add(p.id);
-      const text = `${p.strategy} ${p.side === "long" ? "BUY" : "SELL"} ${p.qty} ${p.symbol} @ ${p.entry} (${p.reason})`;
-      if (marketOpen) notify(text);
-      else log(text);
+      const buy = p.side === "long";
+      if (!state.notifiedPaperIds.has(p.id)) {
+        state.notifiedPaperIds.add(p.id);
+        sendAlert(
+          [
+            `${buy ? "🟢 BUY" : "🔴 SELL"} ${p.symbol} at ${money(p.entry)}`,
+            `Stop: ${p.stop != null ? money(p.stop) : "none"} · ${p.target != null ? `Target: ${money(p.target)}` : "Exit by 15:15"}`,
+            `${p.strategy} · ${p.reason} · signal at ${clock(p.time)}`,
+            `Qty for 1/${state.settings.slots} of balance: ${p.qty}`,
+          ].join("\n")
+        );
+      }
+      if (p.status === "closed" && !state.notifiedExitIds.has(p.id)) {
+        state.notifiedExitIds.add(p.id);
+        const label = p.exitReason === "stop" ? "⛔ STOP HIT" : p.exitReason === "target" ? "🎯 TARGET" : "🏁 EXIT 15:15";
+        sendAlert(`${label} ${p.symbol} at ${money(p.exit)} · paper P&L ${money(p.pnl)}`);
+      }
     }
+  }
+
+  // 9:20 heads-up: the stocks that gapped and the level that triggers the trade before 9:25, so an
+  // SL (stop-entry) order can be placed in time.
+  async function sendWatchlistAlert() {
+    const { settings } = state;
+    let niftyText = "";
+    if (settings.niftyFilter) {
+      const change = await getNiftyChange().catch(() => null);
+      niftyText = change == null ? "" : ` Nifty now ${change >= 0 ? "+" : ""}${change.toFixed(2)}%.`;
+    }
+    if (!state.orbCandidates.length) {
+      sendAlert(`👀 9:20 watchlist: no stock gapped ≥ ${settings.orbMinGapPct}% today.${niftyText}`);
+      return;
+    }
+    const lines = state.orbCandidates.map((c) =>
+      c.side === "short"
+        ? `🔴 SELL ${c.symbol} if below ${money(c.level)} · stop ${money(c.stopLevel)} · gap +${c.gapPct.toFixed(2)}%`
+        : `🟢 BUY ${c.symbol} if above ${money(c.level)} · stop ${money(c.stopLevel)} · gap ${c.gapPct.toFixed(2)}%`
+    );
+    const rule = settings.niftyFilter
+      ? `Valid only if it breaks before 9:25 and Nifty is not more than ${settings.niftyMaxAgainstPct}% in the gap's direction.`
+      : "Valid only if it breaks before 9:25.";
+    sendAlert([`👀 9:20 watchlist (${state.orbCandidates.length})`, ...lines, rule + niftyText].join("\n"));
+  }
+
+  async function replayPaperSession(now, marketOpen) {
+    const { day, positions } = await computeSessionSignals(now, {
+      marketOpen,
+      onProgress: (progress) => {
+        state.replayProgress = progress;
+      },
+    });
+    state.replayProgress = null;
+    if (day === now.dateKey) sendSignalAlerts(positions);
     state.positions = positions;
     state.realisedPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
-    state.paperSessionDay = positions[0]?.day || state.paperSessionDay;
-    log(`Paper replay done: ${positions.length} trades met the conditions (${positions.filter((p) => p.status === "open").length} still open)`);
+    state.paperSessionDay = day || state.paperSessionDay;
+    log(`Paper scan done: ${positions.length} signals (${positions.filter((p) => p.status === "open").length} still open)`);
   }
 
   async function paperTick(now) {
     const marketOpen = now.weekday >= 1 && now.weekday <= 5 && now.minute >= 9 * 60 + 15 && now.minute <= 15 * 60 + 30;
+    const watchlistWindow = now.minute > 9 * 60 + 20 || (now.minute === 9 * 60 + 20 && now.second >= 5);
+    if (marketOpen && state.settings.strategies.includes("orb") && !state.orbPrepared && watchlistWindow && now.minute < 9 * 60 + 25) {
+      await prepareOrb();
+      await sendWatchlistAlert();
+    }
     // during market hours: once per completed 5-min candle; otherwise once per calendar day
     const key = marketOpen ? `${now.dateKey}-${now.minute - (now.minute % 5)}` : `closed-${now.dateKey}`;
     if (key === state.lastReplayKey || (marketOpen && now.second < 5)) return;
     state.lastReplayKey = key;
     await replayPaperSession(now, marketOpen);
+  }
+
+  // Signals for a past date (date picker). Runs in the background; the UI polls until status is "done".
+  // Finished past dates are cached since their candles don't change.
+  function signalsForDate(dateKey) {
+    const today = istNow().dateKey;
+    if (dateKey === today) {
+      return {
+        date: dateKey,
+        status: state.replayProgress ? "running" : "done",
+        progress: state.replayProgress,
+        live: true,
+        scanned: state.enabled && state.lastReplayKey != null,
+        positions: state.paperSessionDay === today ? state.positions : [],
+      };
+    }
+    if (dateKey > today) return { date: dateKey, status: "done", positions: [], note: "That date is in the future." };
+
+    let job = state.dateJobs.get(dateKey);
+    if (!job || job.status === "error") {
+      job = { status: "running", progress: "0", positions: [], error: null, note: null };
+      state.dateJobs.set(dateKey, job);
+      (async () => {
+        if (!state.universe.length) await loadUniverse();
+        if (state.capital == null) await loadCapital();
+        const result = await computeSessionSignals(
+          { dateKey, minute: 15 * 60 + 30 },
+          {
+            requireDay: dateKey,
+            onProgress: (progress) => {
+              job.progress = progress;
+            },
+          }
+        );
+        job.positions = result.positions;
+        if (!result.day) job.note = "No trading session on this date (weekend or market holiday).";
+        job.status = "done";
+      })().catch((error) => {
+        job.status = "error";
+        job.error = error.message;
+      });
+    }
+    return { date: dateKey, ...job };
   }
 
   async function placeExitOrders(p) {
@@ -855,6 +983,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       notify("Stopped. Open positions (if any) are NOT closed - use square-off or Kite.");
       return this.status();
     },
+    signalsForDate,
     setMode(mode) {
       if (mode !== "live" && mode !== "paper") throw new Error("mode must be 'live' or 'paper'");
       if (state.settings.mode === "live" && activePositions().length) throw new Error("Close open live positions before switching mode");

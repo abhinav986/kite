@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import http from "http";
@@ -29,6 +30,7 @@ const config = {
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
   telegramChatId: process.env.TELEGRAM_CHAT_ID || "",
+  adminPassword: process.env.ADMIN_PASSWORD || "",
 };
 
 const persistedSession = loadPersistedSession();
@@ -150,12 +152,29 @@ function clearPersistedSession() {
   }
 }
 
+// Optional protection: when ADMIN_PASSWORD is set, every route not marked `public` (orders, account data,
+// scanner, auto-trader, backtest) needs the X-Admin-Password header to match it. Unset = all routes open.
+function checkAdminPassword(req) {
+  if (!config.adminPassword) {
+    return null;
+  }
+  const given = String(req.headers["x-admin-password"] || "");
+  if (!given) {
+    return { code: "admin_password_required", error: "Password required." };
+  }
+  const digest = (value) => crypto.createHash("sha256").update(value).digest();
+  if (!crypto.timingSafeEqual(digest(given), digest(config.adminPassword))) {
+    return { code: "admin_password_invalid", error: "Wrong password." };
+  }
+  return null;
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Admin-Password",
   });
   res.end(JSON.stringify(payload));
 }
@@ -165,7 +184,7 @@ function sendHtml(res, statusCode, html) {
     "Content-Type": "text/html; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Admin-Password",
   });
   res.end(html);
 }
@@ -179,7 +198,7 @@ function sendNoContent(res) {
   res.writeHead(204, {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Admin-Password",
   });
   res.end();
 }
@@ -956,7 +975,7 @@ const routes = {
   },
 
   async autoTraderStatus(req, res) {
-    sendJson(res, 200, autoTrader.status());
+    sendJson(res, 200, { ...autoTrader.status(), telegramConfigured: Boolean(config.telegramBotToken && config.telegramChatId) });
   },
 
   async autoTraderStart(req, res) {
@@ -965,6 +984,15 @@ const routes = {
 
   async autoTraderStop(req, res) {
     sendJson(res, 200, autoTrader.stop());
+  },
+
+  async autoTraderSignals(req, res, url) {
+    const date = url.searchParams.get("date") || "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      sendJson(res, 400, { error: "date must be YYYY-MM-DD" });
+      return;
+    }
+    sendJson(res, 200, autoTrader.signalsForDate(date));
   },
 
   async autoTraderMode(req, res) {
@@ -1181,8 +1209,8 @@ const routes = {
 };
 
 const router = [
-  { method: "GET", pattern: /^\/api\/health\/?$/, handler: routes.health },
-  { method: "GET", pattern: /^\/api\/auth\/status\/?$/, handler: routes.authStatus },
+  { method: "GET", pattern: /^\/api\/health\/?$/, handler: routes.health, public: true },
+  { method: "GET", pattern: /^\/api\/auth\/status\/?$/, handler: routes.authStatus, public: true },
   { method: "GET", pattern: /^\/api\/scanner\/status\/?$/, handler: routes.scannerStatus },
   { method: "POST", pattern: /^\/api\/scanner\/start\/?$/, handler: routes.scannerStart },
   { method: "POST", pattern: /^\/api\/scanner\/stop\/?$/, handler: routes.scannerStop },
@@ -1193,10 +1221,11 @@ const router = [
   { method: "POST", pattern: /^\/api\/autotrader\/start\/?$/, handler: routes.autoTraderStart },
   { method: "POST", pattern: /^\/api\/autotrader\/stop\/?$/, handler: routes.autoTraderStop },
   { method: "POST", pattern: /^\/api\/autotrader\/mode\/?$/, handler: routes.autoTraderMode },
+  { method: "GET", pattern: /^\/api\/autotrader\/signals\/?$/, handler: routes.autoTraderSignals },
   { method: "POST", pattern: /^\/api\/autotrader\/square-off\/?$/, handler: routes.autoTraderSquareOff },
-  { method: "GET", pattern: /^\/api\/auth\/login-url\/?$/, handler: routes.loginUrl },
-  { method: "GET", pattern: /^\/api\/auth\/login\/?$/, handler: routes.login },
-  { method: "GET", pattern: /^\/api\/auth\/callback\/?$/, handler: routes.authCallback },
+  { method: "GET", pattern: /^\/api\/auth\/login-url\/?$/, handler: routes.loginUrl, public: true },
+  { method: "GET", pattern: /^\/api\/auth\/login\/?$/, handler: routes.login, public: true },
+  { method: "GET", pattern: /^\/api\/auth\/callback\/?$/, handler: routes.authCallback, public: true },
   { method: "POST", pattern: /^\/api\/auth\/logout\/?$/, handler: routes.logout },
   { method: "GET", pattern: /^\/api\/profile\/?$/, handler: routes.profile },
   { method: "GET", pattern: /^\/api\/margins\/?$/, handler: routes.margins },
@@ -1206,15 +1235,16 @@ const router = [
   { method: "GET", pattern: /^\/api\/orders\/([^/]+)\/history\/?$/, handler: routes.orderHistory, keys: ["orderId"] },
   { method: "GET", pattern: /^\/api\/trades\/?$/, handler: routes.trades },
   { method: "GET", pattern: /^\/api\/orders\/([^/]+)\/trades\/?$/, handler: routes.orderTrades, keys: ["orderId"] },
-  { method: "GET", pattern: /^\/api\/instruments\/?$/, handler: routes.instruments },
-  { method: "GET", pattern: /^\/api\/quote\/?$/, handler: routes.quote },
-  { method: "GET", pattern: /^\/api\/ohlc\/?$/, handler: routes.ohlc },
-  { method: "GET", pattern: /^\/api\/ltp\/?$/, handler: routes.ltp },
-  { method: "GET", pattern: /^\/api\/historyData\/?$/, handler: routes.historical },
+  { method: "GET", pattern: /^\/api\/instruments\/?$/, handler: routes.instruments, public: true },
+  { method: "GET", pattern: /^\/api\/quote\/?$/, handler: routes.quote, public: true },
+  { method: "GET", pattern: /^\/api\/ohlc\/?$/, handler: routes.ohlc, public: true },
+  { method: "GET", pattern: /^\/api\/ltp\/?$/, handler: routes.ltp, public: true },
+  { method: "GET", pattern: /^\/api\/historyData\/?$/, handler: routes.historical, public: true },
   {
     method: "GET",
     pattern: /^\/api\/historyData\/intraday\/?$/,
     handler: (req, res, url) => routes.historical(req, res, url, { mode: "intraday", fallbackWindow: "default" }),
+    public: true,
   },
   { method: "POST", pattern: /^\/api\/orders\/?$/, handler: routes.placeOrder },
   { method: "PUT", pattern: /^\/api\/orders\/([^/]+)\/?$/, handler: routes.modifyOrder, keys: ["orderId"] },
@@ -1265,6 +1295,14 @@ const server = http.createServer(async (req, res) => {
   if (!match) {
     sendJson(res, 404, { error: "Route not found" });
     return;
+  }
+
+  if (!match.route.public) {
+    const denied = checkAdminPassword(req);
+    if (denied) {
+      sendJson(res, 401, denied);
+      return;
+    }
   }
 
   try {

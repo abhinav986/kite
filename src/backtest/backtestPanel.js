@@ -16,6 +16,7 @@ import {
     Typography,
 } from "@mui/material";
 import { get, post } from "../utils/axios";
+import SignalsPanel from "./signalsPanel";
 
 const rupees = (value) => (value == null ? "-" : `₹${Number(value).toLocaleString("en-IN")}`);
 
@@ -23,19 +24,17 @@ const pnlColor = (value) => (value > 0 ? "#15803d" : value < 0 ? "#b91c1c" : "in
 
 const BacktestPanel = () => {
     const [backtest, setBacktest] = useState(null);
-    const [trader, setTrader] = useState(null);
     const [error, setError] = useState("");
 
     const refresh = useCallback(() => {
         get("backtest/status").then((res) => setBacktest(res.data)).catch(() => {});
-        get("autotrader/status").then((res) => setTrader(res.data)).catch(() => {});
     }, []);
 
     useEffect(() => {
         refresh();
-        const interval = setInterval(refresh, backtest?.running || trader?.enabled ? 3000 : 15000);
+        const interval = setInterval(refresh, backtest?.running ? 3000 : 15000);
         return () => clearInterval(interval);
-    }, [refresh, backtest?.running, trader?.enabled]);
+    }, [refresh, backtest?.running]);
 
     const call = (url, payload) => {
         setError("");
@@ -139,158 +138,14 @@ const BacktestPanel = () => {
                             </Table>
                         </TableContainer>
                         <Typography sx={{ fontSize: 12, color: "#64748b", mt: 1 }}>
-                            "candidate" = at least 100 trades, profit factor ≥ 1.15, and profit in both halves of the period ({results.period?.splitDay ? `split at ${results.period.splitDay}` : "split by date"}).
+                            "candidate" = at least 100 trades, profit factor ≥ 1.15, and profit in both halves and every year of the period ({results.period?.splitDay ? `split at ${results.period.splitDay}` : "split by date"}).
                             That is the minimum before paper trading a strategy, not a guarantee of future profit.
                         </Typography>
                     </Box>
                 )}
             </Paper>
 
-            <Paper elevation={0} sx={{ p: 2.5, borderRadius: 4, border: "1px solid rgba(15, 61, 62, 0.12)" }}>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }} justifyContent="space-between">
-                    <Box>
-                        <Stack direction="row" spacing={1} alignItems="center">
-                            <Typography variant="h6" sx={{ fontWeight: 800 }}>Auto Trader</Typography>
-                            {trader && (
-                                <Chip
-                                    size="small"
-                                    label={trader.mode === "live" ? "LIVE - real orders" : "PAPER - no real orders"}
-                                    color={trader.mode === "live" ? "error" : "default"}
-                                />
-                            )}
-                            {trader && <Chip size="small" label={trader.enabled ? "Running" : "Stopped"} color={trader.enabled ? "success" : "default"} />}
-                        </Stack>
-                        <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            {trader?.settings && (
-                                <>
-                                    Gap ≥ {trader.settings.orbMinGapPct}% fade (gap-up SELL / gap-down BUY on 1st-candle break)
-                                    {trader.settings.niftyFilter ? " · Nifty filter" : ""}
-                                    {trader.settings.strategies.includes("engulfe") ? " · closingTwoEngulfe" : ""}
-                                    {trader.settings.volumeMultiple > 0 ? ` · volume ≥ ${trader.settings.volumeMultiple}x` : ""}
-                                    {" "}· stop loss {trader.settings.useStopLoss ? "at 1st candle's other end" : "off"}
-                                    {" "}· {trader.settings.orbRR > 0 ? `target ${trader.settings.orbRR}R` : "exit 15:15"}
-                                    {" "}· balance split in {trader.settings.slots} parts
-                                    {trader.slotCapital ? ` (${rupees(Math.round(trader.slotCapital))} each)` : ""}
-                                </>
-                            )}
-                        </Typography>
-                    </Box>
-                    <Stack direction="row" spacing={1}>
-                        <Button
-                            variant="outlined"
-                            color={trader?.mode === "live" ? "inherit" : "error"}
-                            disabled={!trader}
-                            onClick={() => {
-                                if (trader.mode === "live") {
-                                    call("autotrader/mode", { mode: "paper" });
-                                } else if (
-                                    window.prompt(
-                                        `LIVE mode places REAL orders with your money${trader.settings.useStopLoss ? "" : ", with NO stop loss"}.\nType LIVE to confirm:`
-                                    ) === "LIVE"
-                                ) {
-                                    call("autotrader/mode", { mode: "live", confirm: "LIVE" });
-                                }
-                            }}
-                        >
-                            {trader?.mode === "live" ? "Switch to Paper" : "Switch to LIVE"}
-                        </Button>
-                        <Button variant="contained" color="success" disabled={!trader || trader.enabled} onClick={() => call("autotrader/start")}>
-                            Start
-                        </Button>
-                        <Button variant="outlined" disabled={!trader?.enabled} onClick={() => call("autotrader/stop")}>
-                            Stop
-                        </Button>
-                        <Button
-                            variant="outlined"
-                            color="error"
-                            onClick={() => window.confirm("Close all auto-trader positions now?") && call("autotrader/square-off")}
-                        >
-                            Square-off all
-                        </Button>
-                    </Stack>
-                </Stack>
-
-                {trader && (
-                    <Box sx={{ mt: 2 }}>
-                        {trader.mode === "paper" ? (
-                            <>
-                                <Typography sx={{ fontSize: 13, color: "#475569" }}>
-                                    Paper shows every stock that met the conditions (no 3-trade limit), refreshed every 5 minutes.
-                                    After market hours it replays the last session. Each trade is sized at ⅓ of the balance.
-                                </Typography>
-                                {trader.replayProgress && (
-                                    <Box sx={{ mt: 1 }}>
-                                        <Typography sx={{ fontSize: 13 }}>Scanning stocks {trader.replayProgress}...</Typography>
-                                        <LinearProgress />
-                                    </Box>
-                                )}
-                                <Typography sx={{ mt: 1, fontWeight: 700, color: pnlColor(trader.realisedPnl) }}>
-                                    Paper P&L{trader.paperSessionDay ? ` for ${trader.paperSessionDay}` : ""} ({trader.positions?.length || 0} trades):{" "}
-                                    {rupees(Math.round(trader.realisedPnl))}
-                                </Typography>
-                            </>
-                        ) : (
-                            <Typography sx={{ fontWeight: 700, color: pnlColor(trader.realisedPnl) }}>
-                                Today's realised P&L: {rupees(trader.realisedPnl)}
-                            </Typography>
-                        )}
-                        {trader.haltedReason && <Alert severity="warning" sx={{ mt: 1 }}>{trader.haltedReason}</Alert>}
-                        {trader.lastError && <Alert severity="error" sx={{ mt: 1 }}>{trader.lastError}</Alert>}
-
-                        {trader.positions?.length > 0 && (
-                            <TableContainer sx={{ mt: 1 }}>
-                                <Table size="small">
-                                    <TableHead>
-                                        <TableRow>
-                                            <TableCell>Time</TableCell>
-                                            <TableCell>Stock</TableCell>
-                                            <TableCell>Strategy</TableCell>
-                                            <TableCell>Side</TableCell>
-                                            <TableCell align="right">Qty</TableCell>
-                                            <TableCell align="right">Entry</TableCell>
-                                            <TableCell align="right">Stop</TableCell>
-                                            <TableCell align="right">Target</TableCell>
-                                            <TableCell align="right">Exit / Last</TableCell>
-                                            <TableCell>Status</TableCell>
-                                            <TableCell align="right">P&L</TableCell>
-                                            <TableCell>Why</TableCell>
-                                        </TableRow>
-                                    </TableHead>
-                                    <TableBody>
-                                        {trader.positions.map((p) => (
-                                            <TableRow key={p.id}>
-                                                <TableCell>
-                                                    {new Date(p.time || p.openedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
-                                                </TableCell>
-                                                <TableCell sx={{ fontWeight: 600 }}>{p.symbol}</TableCell>
-                                                <TableCell>{p.strategy}</TableCell>
-                                                <TableCell>{p.side === "long" ? "BUY" : "SELL"}</TableCell>
-                                                <TableCell align="right">{p.qty}</TableCell>
-                                                <TableCell align="right">{p.entry}</TableCell>
-                                                <TableCell align="right">{p.stop}</TableCell>
-                                                <TableCell align="right">{p.target}</TableCell>
-                                                <TableCell align="right">{p.exit ?? p.lastPrice ?? "-"}</TableCell>
-                                                <TableCell>{p.status}{p.exitReason ? ` (${p.exitReason})` : ""}</TableCell>
-                                                <TableCell align="right" sx={{ color: pnlColor(p.pnl) }}>{p.pnl != null ? rupees(p.pnl) : "-"}</TableCell>
-                                                <TableCell sx={{ fontSize: 12, color: "#64748b" }}>{p.reason}</TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </TableContainer>
-                        )}
-
-                        {trader.recentEvents?.length > 0 && (
-                            <Box
-                                component="pre"
-                                sx={{ mt: 2, p: 1.5, maxHeight: 160, overflow: "auto", fontSize: 12, background: "#0f172a", color: "#e2e8f0", borderRadius: 2 }}
-                            >
-                                {trader.recentEvents.join("\n")}
-                            </Box>
-                        )}
-                    </Box>
-                )}
-            </Paper>
+            <SignalsPanel />
         </Stack>
     );
 };
