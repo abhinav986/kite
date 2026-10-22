@@ -202,7 +202,10 @@ function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target,
 
 // ---------- strategy 1: gap reversal on first-candle break ----------
 
-function orbTrades({ symbol, day, d, candles, prevClose, history, offset, rvol, niftyChange }, opts) {
+function orbTrades({ symbol, rank, day, d, candles, prevClose, history, offset, rvol, niftyChange }, opts) {
+  // liquidity rank (0 = most liquid): limit a variant to the top N stocks, or to the stocks after them
+  if (opts.maxRank != null && !(rank < opts.maxRank)) return null;
+  if (opts.minRank != null && !(rank >= opts.minRank)) return null;
   const c1 = candles[0];
   const c2 = candles[1];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
@@ -232,10 +235,14 @@ function orbTrades({ symbol, day, d, candles, prevClose, history, offset, rvol, 
   if (!volumeOk(history, offset + 1, opts.volumeMultiple)) return null;
   // 2nd candle vs the same 9:20 candle of the last 10 sessions
   if (opts.minRvol && !(rvol(d, 1) >= opts.minRvol)) return null;
-  // fade only when the market isn't pushing the same way as the gap
+  // fade only when the market isn't pushing the same way as the gap. "against" = how far Nifty moves in the
+  // gap's direction; niftyMinAgainst isolates the extra trades a looser limit would add.
   if (opts.niftyFilter) {
     const nifty = niftyChange(day, c2.minute);
-    if (nifty == null || (side === "short" ? nifty > 0.2 : nifty < -0.2)) return null;
+    if (nifty == null) return null;
+    const against = side === "short" ? nifty : -nifty;
+    if (against > (opts.niftyMax ?? 0.2)) return null;
+    if (opts.niftyMinAgainst != null && against <= opts.niftyMinAgainst) return null;
   }
 
   const risk = Math.abs(entry - stop);
@@ -265,10 +272,12 @@ function engulfeTrade({ symbol, day, candles, signal, history, offset }, opts) {
   let entry;
   let entryIdx;
   if (opts.entry === "ideal") {
-    // resting stop order exactly at the signal price, as the scanner reports it (kept inside the
-    // signal candle's range, since some functions report a level crossed earlier)
+    // resting stop order at the signal price, as the scanner reports it. Only valid when the signal fires
+    // on the candle that crosses the price; a candle that opens beyond it fills at its open.
     const c = candles[signal.idx];
-    entry = Math.min(Math.max(signal.price, c.low), c.high);
+    const long = signal.direction === "up";
+    if (long ? signal.price > c.high : signal.price < c.low) return null;
+    entry = long ? Math.max(signal.price, c.open) : Math.min(signal.price, c.open);
     entryIdx = signal.idx;
   } else {
     // signal noticed after the candle closes; market order at next candle open
@@ -462,7 +471,9 @@ function main() {
   }
   // only the stocks picked by the last fetchData run (older extra files are ignored)
   const universePath = path.join(DATA_DIR, "_universe.json");
-  const universe = fs.existsSync(universePath) ? new Set(JSON.parse(fs.readFileSync(universePath, "utf8"))) : null;
+  const ranked = fs.existsSync(universePath) ? JSON.parse(fs.readFileSync(universePath, "utf8")) : null;
+  const universe = ranked ? new Set(ranked) : null;
+  const rankOf = new Map((ranked || []).map((symbol, i) => [symbol, i]));
   const files = fs
     .readdirSync(DATA_DIR)
     .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
@@ -510,6 +521,19 @@ function main() {
   }
   orbVariants.push({ name: "NEW gap 0.5-2% fade, SL, RR=2, RVOL>=3", entry: "break", rr: 2, minGap: 0.5, maxGap: 2, minRvol: 3 });
 
+  // Ways to get more trades from the best setup (gap >= 2% fade, SL, hold to 15:15, Nifty <= 0.2% against).
+  // Each test has an "extra trades only" row: a looser rule is worth it only if those added trades profit too.
+  const best = { entry: "break", rr: null, minGap: 2, maxGap: 100, niftyFilter: true, niftyMax: 0.2 };
+  orbVariants.push(
+    { ...best, name: "BEST gap>=2% fade + Nifty 0.2% (top 100 stocks)", maxRank: 100 },
+    { ...best, name: "TEST1 same rule on ALL F&O stocks" },
+    { ...best, name: "TEST1 extra trades only: stocks ranked 101+", minRank: 100 },
+    { ...best, name: "TEST2 gap>=1.5% + Nifty 0.2% (top 100)", minGap: 1.5, maxRank: 100 },
+    { ...best, name: "TEST2 extra trades only: gap 1.5-2% (top 100)", minGap: 1.5, maxGap: 2, maxRank: 100 },
+    { ...best, name: "TEST3 gap>=2% + Nifty 0.4% (top 100)", niftyMax: 0.4, maxRank: 100 },
+    { ...best, name: "TEST3 extra trades only: Nifty 0.2-0.4% against (top 100)", niftyMax: 0.4, niftyMinAgainst: 0.2, maxRank: 100 }
+  );
+
   const pdhlVariants = [
     { name: "NEW prev-day high/low breakout, RR=2", rr: 2 },
     { name: "NEW prev-day high/low breakout, RR=2, RVOL>=2", rr: 2, minRvol: 2 },
@@ -520,10 +544,15 @@ function main() {
     { name: "NEW VWAP pullback, RR=2, day RVOL>=1.5", rr: 2, minCumRvol: 1.5 },
     { name: "NEW VWAP pullback, EOD, day RVOL>=1.5", rr: null, minCumRvol: 1.5 },
   ];
-  const analysisVariants = Object.keys(ANALYSIS_STRATEGIES).flatMap((key) => [
-    { key, name: `analysis.js ${key}: ideal entry, SL 1% RR=2`, entry: "ideal", stopPct: 1, rr: 2 },
-    { key, name: `analysis.js ${key}: next-open, SL 1% RR=2`, entry: "next", stopPct: 1, rr: 2 },
-  ]);
+  // Next-open entry only: several of these functions report a price crossed candles before the signal is
+  // confirmed (e.g. newBestTracker needs 3 crosses), so an "ideal" fill at that price is not achievable.
+  const analysisVariants = Object.keys(ANALYSIS_STRATEGIES).map((key) => ({
+    key,
+    name: `analysis.js ${key}: next-open, SL 1% RR=2`,
+    entry: "next",
+    stopPct: 1,
+    rr: 2,
+  }));
 
   const allVariants = [...orbVariants, ...engulfeVariants, ...pdhlVariants, ...vwapVariants, ...analysisVariants];
   const trades = Object.fromEntries(allVariants.map((v) => [v.name, []]));
@@ -546,6 +575,7 @@ function main() {
       const history = [...prevCandles, ...candles];
       const ctx = {
         symbol,
+        rank: rankOf.get(symbol) ?? Infinity,
         day,
         d,
         candles,

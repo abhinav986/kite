@@ -1,17 +1,16 @@
 // Intraday auto-trader for NSE F&O stocks (cash segment, MIS).
 //
-// Methods
-//  - gap-up SELL:   stock opens >= min gap above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low.
-//  - gap-down BUY:  stock opens >= min gap below yesterday's close and the 2nd 5-min candle breaks the 1st candle's high.
-//  - engulfe:       closingTwoEngulfe signal on completed 5-min candles, entered at market.
-// Every entry also needs the signal candle's volume >= AUTOTRADE_VOLUME_MULTIPLE x the average of the previous
-// 10 candles (previous day's candles are used when today has fewer than 10).
+// Default method (the only backtest candidate, see server/backtest/run.js "NEW gap>=2% fade ... Nifty filter"):
+//  - gap-up SELL:   stock opens >= 2% above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low,
+//                   while Nifty is not up more than 0.2%. Stop = 1st candle's high.
+//  - gap-down BUY:  mirror image. Stop = 1st candle's low.
+//  Held until the stop or AUTOTRADE_SQUARE_OFF (default 15:15).
+// Optional (AUTOTRADE_STRATEGIES=orb,engulfe): closingTwoEngulfe - it lost money in every backtest variant.
+// Optional filter: AUTOTRADE_VOLUME_MULTIPLE > 0 requires the signal candle's volume >= that multiple of the
+// previous 10 candles' average.
 //
 // Sizing: the available equity balance is split into AUTOTRADE_SLOTS equal parts (default 3); each trade uses
 // one part. At most one trade per slot per day.
-//
-// Exits: no stop loss by default (AUTOTRADE_USE_STOP_LOSS=true turns it on). A position closes at its target
-// (if the method's RR is > 0) or at AUTOTRADE_SQUARE_OFF (default 15:15).
 //
 // Modes (switched from the UI and saved in server/autotrader-mode.json)
 //  - paper (default): no orders are sent; fills are simulated from LTP.
@@ -29,6 +28,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ORDER_TAG = "autotrd";
 const LOG_PATH = path.join(process.cwd(), "server", "autotrader-trades.jsonl");
 const MODE_PATH = path.join(process.cwd(), "server", "autotrader-mode.json");
+const BACKTEST_UNIVERSE_PATH = path.join(process.cwd(), "server", "backtest", "data", "_universe.json");
+const NIFTY_TOKEN = 256265; // NSE:NIFTY 50 index
 
 // Mode chosen from the UI; falls back to AUTOTRADE_MODE, then paper.
 function readSavedMode() {
@@ -55,19 +56,24 @@ function readSettings() {
   const slots = envNumber("AUTOTRADE_SLOTS", 3);
   return {
     mode: readSavedMode(),
-    strategies: (process.env.AUTOTRADE_STRATEGIES || "orb,engulfe").split(",").map((s) => s.trim()).filter(Boolean),
+    // Defaults = the only backtest candidate: gap >= 2% fade, Nifty filter, stop at the 1st candle's
+    // other extreme, held to 15:15 (PF ~2.6, profitable in both halves of Oct 2024 - Oct 2026).
+    strategies: (process.env.AUTOTRADE_STRATEGIES || "orb").split(",").map((s) => s.trim()).filter(Boolean),
     symbols: (process.env.AUTOTRADE_SYMBOLS || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
+    universeSize: envNumber("AUTOTRADE_UNIVERSE_SIZE", 100),
     slots,
     leverage: envNumber("AUTOTRADE_LEVERAGE", 1),
     paperCapital: envNumber("AUTOTRADE_PAPER_CAPITAL", 0),
-    useStopLoss: process.env.AUTOTRADE_USE_STOP_LOSS === "true",
-    volumeMultiple: envNumber("AUTOTRADE_VOLUME_MULTIPLE", 4),
+    useStopLoss: process.env.AUTOTRADE_USE_STOP_LOSS !== "false",
+    volumeMultiple: envNumber("AUTOTRADE_VOLUME_MULTIPLE", 0), // 0 = off
+    niftyFilter: process.env.AUTOTRADE_NIFTY_FILTER !== "false",
+    niftyMaxAgainstPct: envNumber("AUTOTRADE_NIFTY_MAX_AGAINST_PCT", 0.2),
     maxTradesPerDay: envNumber("AUTOTRADE_MAX_TRADES_PER_DAY", slots),
     maxDailyLoss: envNumber("AUTOTRADE_MAX_DAILY_LOSS", 0), // 0 = off
-    orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 0.5),
-    orbMaxGapPct: envNumber("AUTOTRADE_ORB_MAX_GAP_PCT", 2),
+    orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 2),
+    orbMaxGapPct: envNumber("AUTOTRADE_ORB_MAX_GAP_PCT", 100),
     orbEntry: process.env.AUTOTRADE_ORB_ENTRY === "close" ? "close" : "break",
-    orbRR: envNumber("AUTOTRADE_ORB_RR", 2), // target = RR x first-candle range; 0 = hold to square-off
+    orbRR: envNumber("AUTOTRADE_ORB_RR", 0), // target = RR x first-candle range; 0 = hold to square-off
     engulfeStopPct: envNumber("AUTOTRADE_ENGULFE_STOP_PCT", 1), // reference distance for stop/target
     engulfeRR: envNumber("AUTOTRADE_ENGULFE_RR", 0),
     engulfeMaxChasePct: envNumber("AUTOTRADE_ENGULFE_MAX_CHASE_PCT", 0.3),
@@ -181,7 +187,12 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   async function loadUniverse() {
     const [nfo, nse] = await Promise.all([getInstruments("NFO"), getInstruments("NSE")]);
     const fno = new Set(nfo.filter((i) => i.instrument_type === "FUT").map((i) => i.name));
-    const wanted = state.settings.symbols.length ? new Set(state.settings.symbols) : null;
+    // trade the backtested stocks (the file is in liquidity order; top AUTOTRADE_UNIVERSE_SIZE) unless symbols are set
+    let wanted = state.settings.symbols.length ? new Set(state.settings.symbols) : null;
+    if (!wanted && fs.existsSync(BACKTEST_UNIVERSE_PATH)) {
+      const ranked = JSON.parse(fs.readFileSync(BACKTEST_UNIVERSE_PATH, "utf8"));
+      wanted = new Set(ranked.slice(0, state.settings.universeSize));
+    }
     state.universe = nse
       .filter((i) => i.segment === "NSE" && i.instrument_type === "EQ" && fno.has(i.tradingsymbol))
       .filter((i) => !wanted || wanted.has(i.tradingsymbol))
@@ -219,7 +230,25 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return Object.fromEntries(Object.entries(data).map(([key, value]) => [key.replace(/^NSE:/, ""), value.last_price]));
   }
 
+  // Nifty 50 % change from yesterday's close, live
+  async function getNiftyChange() {
+    const data = await withKiteAuth(() => kite.getOHLC(["NSE:NIFTY 50"]));
+    const q = data?.["NSE:NIFTY 50"];
+    if (!q?.last_price || !q?.ohlc?.close) return null;
+    return ((q.last_price - q.ohlc.close) / q.ohlc.close) * 100;
+  }
+
+  // Fade a gap only when the market isn't pushing the same way (backtested at +/-0.2%)
+  function niftyCheck(side, change) {
+    const { niftyFilter, niftyMaxAgainstPct } = state.settings;
+    if (!niftyFilter) return { ok: true, text: "" };
+    if (change == null) return { ok: false, text: "Nifty unavailable" };
+    const ok = side === "short" ? change <= niftyMaxAgainstPct : change >= -niftyMaxAgainstPct;
+    return { ok, text: `Nifty ${change >= 0 ? "+" : ""}${change.toFixed(2)}%` };
+  }
+
   function volumeCheck(volume, avgVolume) {
+    if (!(state.settings.volumeMultiple > 0)) return { ok: true, text: "" };
     if (!(avgVolume > 0)) return { ok: false, text: "no volume average" };
     const ratio = volume / avgVolume;
     return { ok: ratio >= state.settings.volumeMultiple, text: `volume ${ratio.toFixed(1)}x avg` };
@@ -240,7 +269,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   }
 
   // refDistance: per-share distance used for the target (first-candle range for ORB, % for engulfe)
-  async function enterTrade({ stock, side, refPrice, refDistance, rr, strategy, reason }) {
+  // and for the stop when no explicit stopPrice is given.
+  async function enterTrade({ stock, side, refPrice, refDistance, stopPrice, rr, strategy, reason }) {
     const { settings } = state;
     if (state.tradedToday.has(stock.symbol)) return;
     state.tradedToday.add(stock.symbol);
@@ -252,7 +282,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
 
     const long = side === "long";
-    const stop = settings.useStopLoss ? roundToTick(long ? refPrice - refDistance : refPrice + refDistance, stock.tick, long ? "down" : "up") : null;
+    const rawStop = stopPrice ?? (long ? refPrice - refDistance : refPrice + refDistance);
+    const stop = settings.useStopLoss ? roundToTick(rawStop, stock.tick, long ? "down" : "up") : null;
     const target = rr > 0 ? roundToTick(long ? refPrice + refDistance * rr : refPrice - refDistance * rr, stock.tick, long ? "up" : "down") : null;
     const position = {
       id: `${stock.symbol}-${Date.now()}`,
@@ -265,6 +296,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       refDistance,
       rr,
       stop,
+      fixedStop: stopPrice != null, // a chart level: not moved to the fill price
       target,
       reason,
       status: "pending",
@@ -324,6 +356,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         ...stock,
         side,
         level: side === "short" ? first.low : first.high,
+        stopLevel: side === "short" ? first.high : first.low,
         range: first.high - first.low,
         firstVolume: first.volume,
         avgVolume: averageVolume(all), // 10 candles before the 2nd candle (1st candle + previous day)
@@ -332,18 +365,22 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     log(`Gap candidates: ${state.orbCandidates.map((c) => `${c.symbol} ${c.gapPct.toFixed(2)}%`).join(", ") || "none"}`);
   }
 
-  async function tryOrbEntry(c, price, volume, minute) {
+  // Returns false when a filter blocks the entry (the stock is re-checked on the next tick).
+  async function tryOrbEntry(c, price, volume, minute, niftyChange) {
     const vol = volumeCheck(volume, c.avgVolume);
     if (!vol.ok) return false;
+    const nifty = niftyCheck(c.side, niftyChange);
+    if (!nifty.ok) return false;
     if (!canOpenNewTrade(minute)) return true;
     await enterTrade({
       stock: c,
       side: c.side,
       refPrice: price,
       refDistance: c.range,
+      stopPrice: c.stopLevel,
       rr: state.settings.orbRR,
       strategy: c.side === "short" ? "GAP-UP SELL" : "GAP-DOWN BUY",
-      reason: `gap ${c.gapPct.toFixed(2)}%, ${vol.text}`,
+      reason: [`gap ${c.gapPct.toFixed(2)}%`, nifty.text, vol.text].filter(Boolean).join(", "),
     });
     return true;
   }
@@ -361,11 +398,15 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         return;
       }
       const quotes = await getQuotes(pending.map((c) => c.symbol));
-      for (const c of pending) {
+      const broken = pending.filter((c) => {
+        const ltp = quotes[c.symbol]?.last_price;
+        return ltp && (c.side === "short" ? ltp < c.level : ltp > c.level);
+      });
+      if (!broken.length) return;
+      const niftyChange = state.settings.niftyFilter ? await getNiftyChange() : null;
+      for (const c of broken) {
         const q = quotes[c.symbol];
-        if (!q?.last_price) continue;
-        const broke = c.side === "short" ? q.last_price < c.level : q.last_price > c.level;
-        if (broke) await tryOrbEntry(c, q.last_price, (q.volume || 0) - (c.firstVolume || 0), minute);
+        await tryOrbEntry(c, q.last_price, (q.volume || 0) - (c.firstVolume || 0), minute, niftyChange);
       }
       return;
     }
@@ -373,12 +414,13 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     // "close" entry: wait for the 2nd candle to close beyond the level
     if (minute < 9 * 60 + 25) return;
     state.orbCandidates = [];
+    const niftyChange = state.settings.niftyFilter ? await getNiftyChange() : null;
     for (const c of pending) {
       const { today } = await getRecentCandles(c.token, 9 * 60 + 25);
       const second = today[1];
       if (!second) continue;
       const closedBeyond = c.side === "short" ? second.close < c.level : second.close > c.level;
-      if (closedBeyond) await tryOrbEntry(c, second.close, second.volume, minute);
+      if (closedBeyond) await tryOrbEntry(c, second.close, second.volume, minute, niftyChange);
     }
   }
 
@@ -481,13 +523,18 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
-  function paperPosition({ stock, session, strategy, side, entryIdx, fromIdx, entry, refDistance, rr, reason, ltp }) {
+  function paperPosition({ stock, session, strategy, side, entryIdx, fromIdx, entry, refDistance, stopPrice, rr, reason, ltp }) {
     const { settings } = state;
     const long = side === "long";
     const qty = Math.max(1, Math.floor((state.slotCapital * settings.leverage) / entry));
-    const stop = settings.useStopLoss ? roundToTick(long ? entry - refDistance : entry + refDistance, stock.tick, long ? "down" : "up") : null;
+    const rawStop = stopPrice ?? (long ? entry - refDistance : entry + refDistance);
+    const stop = settings.useStopLoss ? roundToTick(rawStop, stock.tick, long ? "down" : "up") : null;
     const target = rr > 0 ? roundToTick(long ? entry + refDistance * rr : entry - refDistance * rr, stock.tick, long ? "up" : "down") : null;
-    const exit = replayExit({ today: session.today, fromIdx, side, stop, target });
+    // an intrabar entry can still be stopped out on its own candle
+    const stopOnEntryBar = fromIdx > entryIdx && stop != null && (long ? session.today[entryIdx].low <= stop : session.today[entryIdx].high >= stop);
+    const exit = stopOnEntryBar
+      ? { exit: stop, reason: "stop", at: session.today[entryIdx].date }
+      : replayExit({ today: session.today, fromIdx, side, stop, target });
     const mark = exit ? exit.exit : ltp ?? session.today[session.today.length - 1].close;
     return {
       id: `${session.day}-${stock.symbol}-${strategy}`,
@@ -510,7 +557,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     };
   }
 
-  function replayGap(stock, session) {
+  function replayGap(stock, session, niftyChangeAt) {
     const { settings } = state;
     const [c1, c2] = session.today;
     if (!c1 || !c2 || !session.prev.length) return null;
@@ -530,6 +577,9 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
     const vol = volumeAt(session.history, session.offset + 1);
     if (!vol.ok) return null;
+    // Nifty measured at the 2nd candle's close, as in the backtest
+    const nifty = niftyCheck(side, niftyChangeAt(c2.date));
+    if (!nifty.ok) return null;
     return paperPosition({
       stock,
       session,
@@ -539,8 +589,9 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       fromIdx: 2,
       entry,
       refDistance: c1.high - c1.low,
+      stopPrice: side === "short" ? c1.high : c1.low,
       rr: settings.orbRR,
-      reason: `gap ${gapPct.toFixed(2)}%, ${vol.text}`,
+      reason: [`gap ${gapPct.toFixed(2)}%`, nifty.text, vol.text].filter(Boolean).join(", "),
     });
   }
 
@@ -574,9 +625,28 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
+  // Returns candleDate -> Nifty % change from the previous session's close at that candle's close.
+  async function loadNiftyChangeAt(now) {
+    if (!state.settings.niftyFilter) return () => null;
+    try {
+      const session = splitLastSession(await fetchCompletedCandles(NIFTY_TOKEN, now.dateKey, Math.min(now.minute, 15 * 60 + 30)));
+      if (!session?.prev.length) return () => null;
+      const prevClose = session.prev[session.prev.length - 1].close;
+      const closes = new Map(session.today.map((c) => [new Date(c.date).getTime(), c.close]));
+      return (date) => {
+        const close = closes.get(new Date(date).getTime());
+        return close == null ? null : ((close - prevClose) / prevClose) * 100;
+      };
+    } catch (error) {
+      log(`Nifty candles unavailable: ${error.message}`);
+      return () => null;
+    }
+  }
+
   async function replayPaperSession(now, marketOpen) {
     const { strategies } = state.settings;
     const ltps = marketOpen ? await getLtps(state.universe.map((s) => s.symbol)).catch(() => ({})) : {};
+    const niftyChangeAt = await loadNiftyChangeAt(now);
     const positions = [];
     let done = 0;
     for (const stock of state.universe) {
@@ -591,7 +661,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       }
       if (!session || session.today.length < 2) continue;
       if (strategies.includes("orb")) {
-        const p = replayGap(stock, session);
+        const p = replayGap(stock, session, niftyChangeAt);
         if (p) positions.push(p);
       }
       if (strategies.includes("engulfe")) {
@@ -664,7 +734,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         // re-anchor stop/target to the actual fill price
         const long = p.side === "long";
         p.entry = entry.average_price;
-        if (p.stop != null) p.stop = roundToTick(long ? p.entry - p.refDistance : p.entry + p.refDistance, p.tick, long ? "down" : "up");
+        if (p.stop != null && !p.fixedStop) p.stop = roundToTick(long ? p.entry - p.refDistance : p.entry + p.refDistance, p.tick, long ? "down" : "up");
         if (p.target != null) p.target = roundToTick(long ? p.entry + p.refDistance * p.rr : p.entry - p.refDistance * p.rr, p.tick, long ? "up" : "down");
         p.status = "open";
         try {

@@ -62,8 +62,8 @@ export async function getFnoStocks(kite) {
 }
 
 // Keeps the `limit` most liquid stocks, ranked by today's traded value (volume x average price).
+// The result stays in rank order: run.js uses the position to test "top 100" vs the rest.
 async function pickMostLiquid(kite, stocks, limit) {
-  if (stocks.length <= limit) return stocks;
   const value = new Map();
   try {
     for (let i = 0; i < stocks.length; i += 500) {

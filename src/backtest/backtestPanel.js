@@ -59,7 +59,7 @@ const BacktestPanel = () => {
                     <Box>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>Strategy Backtest (5-min candles)</Typography>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Gap reversal (ORB) and closingTwoEngulfe on the 100 most liquid F&O stocks, 2 years, after Zerodha charges and slippage.
+                            Gap fade, breakouts, VWAP and your analysis.js strategies on all F&O stocks (ranked by liquidity), 2 years, after Zerodha charges and slippage.
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
@@ -75,7 +75,7 @@ const BacktestPanel = () => {
                 {backtest?.running && (
                     <Box sx={{ mt: 2 }}>
                         <Typography sx={{ fontSize: 14, mb: 1 }}>
-                            {backtest.stage === "download" ? "Downloading candles from Kite (about 5 minutes the first time)..." : "Running backtest..."}
+                            {backtest.stage === "download" ? "Downloading candles from Kite (about 10 minutes the first time, already-downloaded stocks are skipped)..." : "Running backtest..."}
                         </Typography>
                         <LinearProgress />
                     </Box>
@@ -161,9 +161,18 @@ const BacktestPanel = () => {
                             {trader && <Chip size="small" label={trader.enabled ? "Running" : "Stopped"} color={trader.enabled ? "success" : "default"} />}
                         </Stack>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Methods: gap-up SELL, gap-down BUY, closingTwoEngulfe · balance split in {trader?.settings?.slots} parts
-                            {trader?.slotCapital ? ` (${rupees(Math.round(trader.slotCapital))} each)` : ""} · volume ≥ {trader?.settings?.volumeMultiple}x
-                            last-10 average · stop loss {trader?.settings?.useStopLoss ? "on" : "off"} · exit by 15:15
+                            {trader?.settings && (
+                                <>
+                                    Gap ≥ {trader.settings.orbMinGapPct}% fade (gap-up SELL / gap-down BUY on 1st-candle break)
+                                    {trader.settings.niftyFilter ? " · Nifty filter" : ""}
+                                    {trader.settings.strategies.includes("engulfe") ? " · closingTwoEngulfe" : ""}
+                                    {trader.settings.volumeMultiple > 0 ? ` · volume ≥ ${trader.settings.volumeMultiple}x` : ""}
+                                    {" "}· stop loss {trader.settings.useStopLoss ? "at 1st candle's other end" : "off"}
+                                    {" "}· {trader.settings.orbRR > 0 ? `target ${trader.settings.orbRR}R` : "exit 15:15"}
+                                    {" "}· balance split in {trader.settings.slots} parts
+                                    {trader.slotCapital ? ` (${rupees(Math.round(trader.slotCapital))} each)` : ""}
+                                </>
+                            )}
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
@@ -176,7 +185,7 @@ const BacktestPanel = () => {
                                     call("autotrader/mode", { mode: "paper" });
                                 } else if (
                                     window.prompt(
-                                        "LIVE mode places REAL orders with your money, with NO stop loss.\nType LIVE to confirm:"
+                                        `LIVE mode places REAL orders with your money${trader.settings.useStopLoss ? "" : ", with NO stop loss"}.\nType LIVE to confirm:`
                                     ) === "LIVE"
                                 ) {
                                     call("autotrader/mode", { mode: "live", confirm: "LIVE" });
