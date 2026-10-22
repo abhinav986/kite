@@ -1,8 +1,8 @@
 // Intraday auto-trader for NSE F&O stocks (cash segment, MIS).
 //
 // Default method (the only backtest candidate, see server/backtest/run.js "NEW gap>=2% fade ... Nifty filter"):
-//  - gap-up SELL:   stock opens >= 2% above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low,
-//                   while Nifty is not up more than 0.4%. Stop = 1st candle's high.
+//  - gap-up SELL:   stock opens >= 2% above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low.
+//                   Stop = 1st candle's high. (Optional AUTOTRADE_NIFTY_FILTER=true: skip when Nifty is up > 0.4%.)
 //  - gap-down BUY:  mirror image. Stop = 1st candle's low.
 //  Held until the stop or AUTOTRADE_SQUARE_OFF (default 15:15).
 // Optional (AUTOTRADE_STRATEGIES=orb,engulfe): closingTwoEngulfe - it lost money in every backtest variant.
@@ -66,7 +66,7 @@ function readSettings() {
     paperCapital: envNumber("AUTOTRADE_PAPER_CAPITAL", 0),
     useStopLoss: process.env.AUTOTRADE_USE_STOP_LOSS !== "false",
     volumeMultiple: envNumber("AUTOTRADE_VOLUME_MULTIPLE", 0), // 0 = off
-    niftyFilter: process.env.AUTOTRADE_NIFTY_FILTER !== "false",
+    niftyFilter: process.env.AUTOTRADE_NIFTY_FILTER === "true", // off by default
     // 0.4% backtested better than 0.2%: +45 trades over 2 years, positive in every year, PF 2.44 overall
     niftyMaxAgainstPct: envNumber("AUTOTRADE_NIFTY_MAX_AGAINST_PCT", 0.4),
     maxTradesPerDay: envNumber("AUTOTRADE_MAX_TRADES_PER_DAY", slots),

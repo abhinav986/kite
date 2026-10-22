@@ -58,7 +58,7 @@ const BacktestPanel = () => {
                     <Box>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>Strategy Backtest (5-min candles)</Typography>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Gap fade, breakouts, VWAP and your analysis.js strategies on all F&O stocks (ranked by liquidity), 2 years, after Zerodha charges and slippage.
+                            The paper-signal strategy (gap ≥ 2% fade) on the 100 most liquid F&O stocks, with and without the Nifty check, 2 years, after Zerodha charges and slippage.
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
@@ -74,7 +74,7 @@ const BacktestPanel = () => {
                 {backtest?.running && (
                     <Box sx={{ mt: 2 }}>
                         <Typography sx={{ fontSize: 14, mb: 1 }}>
-                            {backtest.stage === "download" ? "Downloading candles from Kite (about 10 minutes the first time, already-downloaded stocks are skipped)..." : "Running backtest..."}
+                            {backtest.stage === "download" ? "Downloading candles from Kite (about 5 minutes the first time, already-downloaded stocks are skipped)..." : "Running backtest..."}
                         </Typography>
                         <LinearProgress />
                     </Box>

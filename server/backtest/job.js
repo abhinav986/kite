@@ -55,8 +55,8 @@ export function startBacktest({ years = 2, skipDownload = false } = {}) {
   (async () => {
     if (!skipDownload) {
       appendLog("Downloading 5-minute candles from Kite (already-downloaded stocks are skipped)...");
-      // all F&O stocks (~200), saved in liquidity order; strategies can still be limited to the top 100
-      await runScript("fetchData.js", ["--years", String(years), "--limit", "1000"]);
+      // the 100 most liquid F&O stocks, the same ones the signals scan
+      await runScript("fetchData.js", ["--years", String(years), "--limit", "100"]);
     }
     job.stage = "backtest";
     appendLog("Running backtest...");
