@@ -4,12 +4,14 @@ import { DataGrid } from "@mui/x-data-grid";
 import { get } from "./utils/axios";
 import ScannerHome from "./scanner/scannerHome";
 import AnalyticsHome from "./analysis/analysisHome";
+import BacktestPanel from "./backtest/backtestPanel";
 import { stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70, stocks70To75_2 } from "./constants/stock";
 
 const Listing = () => {
     const [data, setData] = useState([]);
     const [showScanner, setShowScanner] = useState(true);
     const [selectedStock, setSelectedStock] = useState(null);
+    const [showTesting, setShowTesting] = useState(false);
 
     useEffect(() => {
         get("instruments").then((res) => {
@@ -196,12 +198,26 @@ const Listing = () => {
                                 >
                                     Hide Analysis
                                 </Button>
+                                <Button
+                                    variant="contained"
+                                    onClick={() => setShowTesting((value) => !value)}
+                                    sx={{
+                                        backgroundColor: "#fbbf24",
+                                        color: "#0f172a",
+                                        fontWeight: 700,
+                                        "&:hover": { backgroundColor: "#f59e0b" },
+                                    }}
+                                >
+                                    {showTesting ? "Hide Testing" : "Strategy Testing"}
+                                </Button>
                             </Stack>
                             <Typography sx={{ mt: 2, opacity: 0.8, fontSize: 14 }}>
                                 {selectedStock ? `Selected: ${selectedStock.name}` : "No stock selected yet."}
                             </Typography>
                         </Paper>
                     </Box>
+
+                    {showTesting && <BacktestPanel />}
 
                     <Box
                         sx={{

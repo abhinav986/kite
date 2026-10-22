@@ -5,6 +5,7 @@ import { URL } from "url";
 import { KiteConnect } from "kiteconnect";
 import { closingTwoEngulfe, newBestTracker } from "./strategies.js";
 import { createAutoTrader } from "./autoTrader.js";
+import { getBacktestStatus, startBacktest } from "./backtest/job.js";
 
 loadEnvFile();
 
@@ -970,6 +971,15 @@ const routes = {
     sendJson(res, 200, await autoTrader.squareOffAll());
   },
 
+  async backtestStatus(req, res) {
+    sendJson(res, 200, getBacktestStatus());
+  },
+
+  async backtestRun(req, res) {
+    const body = await parseBody(req);
+    sendJson(res, 200, startBacktest({ years: Number(body.years) || 2, skipDownload: Boolean(body.skipDownload) }));
+  },
+
   async scannerRunOnce(req, res) {
     const body = await parseBody(req);
     const summary = await runScannerLoop({ force: Boolean(body.force) });
@@ -1164,6 +1174,8 @@ const router = [
   { method: "POST", pattern: /^\/api\/scanner\/start\/?$/, handler: routes.scannerStart },
   { method: "POST", pattern: /^\/api\/scanner\/stop\/?$/, handler: routes.scannerStop },
   { method: "POST", pattern: /^\/api\/scanner\/run-once\/?$/, handler: routes.scannerRunOnce },
+  { method: "GET", pattern: /^\/api\/backtest\/status\/?$/, handler: routes.backtestStatus },
+  { method: "POST", pattern: /^\/api\/backtest\/run\/?$/, handler: routes.backtestRun },
   { method: "GET", pattern: /^\/api\/autotrader\/status\/?$/, handler: routes.autoTraderStatus },
   { method: "POST", pattern: /^\/api\/autotrader\/start\/?$/, handler: routes.autoTraderStart },
   { method: "POST", pattern: /^\/api\/autotrader\/stop\/?$/, handler: routes.autoTraderStop },
