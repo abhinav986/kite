@@ -2,9 +2,9 @@
 //   gap >= 2% at the open -> fade it when the 2nd candle breaks the 1st candle's low (gap-up, SELL) or high
 //   (gap-down, BUY); stop at the 1st candle's other end; held until 15:15. Top 100 most liquid F&O stocks.
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
-// the limit) so the two can be compared, plus TEST 1 (gaps >= 4% only) and TEST 3 (skip when the stock
-// already moved >= 3% the same way yesterday). Also tested: the big-first-candle pullback breakout
-// (see bigCandlePullbackTrade). Results go to server/backtest/results.json.
+// the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
+// (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
+// Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
 //
@@ -31,8 +31,6 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
-const LAST_ENTRY_MINUTE = 14 * 60 + 30; // no new entries after 14:30, same as the signals
-const INSIDE_CANDLES = 5; // candles after 9:15 that must stay inside the 1st candle (big-candle strategy)
 
 // ---------- data ----------
 
@@ -94,19 +92,13 @@ function slip(price, side, isEntry) {
 
 // ---------- trade simulation ----------
 
-// Walks candles from entryIdx managing one position; the entry candle only checks the stop. If stop and
-// target are inside the same candle, the stop is assumed to hit first.
-function simulate({ candles, entryIdx, side, stop, target = null }) {
+// Walks candles from entryIdx managing one position; the entry candle only checks the stop.
+function simulate({ candles, entryIdx, side, stop }) {
   const long = side === "long";
   for (let k = entryIdx; k < candles.length; k += 1) {
     const c = candles[k];
-    const entryBar = k === entryIdx;
-    if (!entryBar && (long ? c.open <= stop : c.open >= stop)) return { exit: c.open, reason: "stop" };
+    if (k !== entryIdx && (long ? c.open <= stop : c.open >= stop)) return { exit: c.open, reason: "stop" };
     if (long ? c.low <= stop : c.high >= stop) return { exit: stop, reason: "stop" };
-    if (!entryBar && target != null) {
-      if (long ? c.open >= target : c.open <= target) return { exit: c.open, reason: "target", limit: true };
-      if (long ? c.high >= target : c.low <= target) return { exit: target, reason: "target", limit: true };
-    }
     if (c.minute >= SQUARE_OFF_MINUTE) return { exit: c.close, reason: "time" };
   }
   return { exit: candles[candles.length - 1].close, reason: "time" };
@@ -114,34 +106,48 @@ function simulate({ candles, entryIdx, side, stop, target = null }) {
 
 // ---------- the strategy ----------
 
-// opts.minGap:         minimum gap in % (default MIN_GAP_PCT)
-// opts.niftyMax:       skip when Nifty moves with the gap by more than this % (null = no check)
+// opts.minGap:          minimum gap in % (default MIN_GAP_PCT)
+// opts.breakCandles:    how many candles after the 1st may make the break (default 1 = only the 9:20 candle).
+//                       A candle that crosses the other side of the 1st candle first cancels the setup.
+// opts.niftyMax:        skip when Nifty moves with the gap by more than this % (null = no check)
 // opts.skipPrevMovePct: skip when the stock already moved this much yesterday in the gap's direction
 function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyChange }, opts) {
-  const [c1, c2] = candles;
+  const c1 = candles[0];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
   if (Math.abs(gapPct) < (opts.minGap ?? MIN_GAP_PCT)) return null;
 
   const side = gapPct > 0 ? "short" : "long";
+  const short = side === "short";
 
   // a second strong move in a row is more often news or momentum than an overreaction
   if (opts.skipPrevMovePct != null) {
     if (prevDayChange == null) return null;
-    const prevWithGap = side === "short" ? prevDayChange : -prevDayChange;
+    const prevWithGap = short ? prevDayChange : -prevDayChange;
     if (prevWithGap >= opts.skipPrevMovePct) return null;
   }
-  const level = side === "short" ? c1.low : c1.high;
-  const stop = side === "short" ? c1.high : c1.low;
-  if (!(side === "short" ? c2.low < level : c2.high > level)) return null;
-  // a 2nd candle that opens beyond the level fills at its open
-  const entry = side === "short" ? Math.min(level, c2.open) : Math.max(level, c2.open);
 
-  // Nifty filter: skip when Nifty moves with the gap by more than the limit at the 2nd candle's close
+  const level = short ? c1.low : c1.high;
+  const stop = short ? c1.high : c1.low;
+  let entryIdx = null;
+  for (let k = 1; k <= (opts.breakCandles ?? 1); k += 1) {
+    const c = candles[k];
+    if (short ? c.low < level : c.high > level) {
+      entryIdx = k;
+      break;
+    }
+    if (short ? c.high > stop : c.low < stop) return null;
+  }
+  if (entryIdx == null) return null;
+  const breakCandle = candles[entryIdx];
+  // a candle that opens beyond the level fills at its open
+  const entry = short ? Math.min(level, breakCandle.open) : Math.max(level, breakCandle.open);
+
+  // Nifty filter, measured at the close of the breakout candle
   let nifty = null;
   if (opts.niftyMax != null) {
-    nifty = niftyChange(day, c2.minute);
+    nifty = niftyChange(day, breakCandle.minute);
     if (nifty == null) return null;
-    const withGap = side === "short" ? nifty : -nifty;
+    const withGap = short ? nifty : -nifty;
     if (withGap > opts.niftyMax) return null;
   }
 
@@ -150,7 +156,7 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
   if (qty < 1) return null;
 
-  const result = simulate({ candles, entryIdx: 1, side, stop });
+  const result = simulate({ candles, entryIdx, side, stop });
   const fillEntry = slip(entry, side, true);
   const fillExit = slip(result.exit, side, false);
   const gross = (side === "long" ? fillExit - fillEntry : fillEntry - fillExit) * qty;
@@ -158,7 +164,7 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   return {
     symbol,
     day,
-    time: c2.date.toISOString(),
+    time: breakCandle.date.toISOString(),
     side,
     gapPct: +gapPct.toFixed(2),
     nifty: nifty == null ? null : +nifty.toFixed(2),
@@ -166,98 +172,6 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
     qty,
     entry: +fillEntry.toFixed(2),
     stop: +stop.toFixed(2),
-    exit: +fillExit.toFixed(2),
-    reason: result.reason,
-    gross: +gross.toFixed(2),
-    cost: +cost.toFixed(2),
-    net: +(gross - cost).toFixed(2),
-    r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
-  };
-}
-
-// ---------- strategy 2: big first candle, inside candles, breakout, pullback, pullback breakout ----------
-//
-// The 9:15 candle's range is >= opts.bigMultiple x the previous day's average 5-min candle range, and at
-// least the next 5 candles (9:20-9:40) stay inside it. The first candle after that to break the 1st candle's
-// high sets up a BUY (low -> SELL). Then a pullback candle (lower low for a BUY; higher high for a SELL - if
-// the pullback goes deeper, the deepest candle counts), and the first candle that breaks the pullback
-// candle's high -> BUY at that price (low -> SELL). Stop = pullback candle's low (high for a SELL);
-// exit at the target (opts.rr x risk, if set) or 15:15. Entries until 14:30.
-function bigCandlePullbackTrade({ symbol, day, candles, prevCandles }, opts) {
-  const c1 = candles[0];
-  const prevAvgRange = prevCandles.reduce((s, c) => s + (c.high - c.low), 0) / prevCandles.length;
-  const sizeMultiple = prevAvgRange > 0 ? (c1.high - c1.low) / prevAvgRange : 0;
-  if (opts.bigMultiple && sizeMultiple < opts.bigMultiple) return null;
-
-  // at least INSIDE_CANDLES candles must stay inside the 1st candle
-  for (let k = 1; k <= INSIDE_CANDLES; k += 1) {
-    if (candles[k].high > c1.high || candles[k].low < c1.low) return null;
-  }
-
-  let side = null;
-  let pullback = null;
-  for (let k = INSIDE_CANDLES + 1; k < candles.length; k += 1) {
-    const c = candles[k];
-    if (c.minute > LAST_ENTRY_MINUTE) return null;
-    if (!side) {
-      const up = c.high > c1.high;
-      const down = c.low < c1.low;
-      if (up && down) return null; // breaks both sides in one candle: no direction
-      if (up) side = "long";
-      else if (down) side = "short";
-      continue;
-    }
-    const long = side === "long";
-    const prev = candles[k - 1];
-    if (pullback && (long ? c.high > pullback.high : c.low < pullback.low)) {
-      const level = long ? pullback.high : pullback.low;
-      // a candle that opens beyond the level fills at its open
-      const entry = long ? Math.max(level, c.open) : Math.min(level, c.open);
-      return buildTrade({
-        symbol,
-        day,
-        candles,
-        entryIdx: k,
-        side,
-        entry,
-        stop: long ? pullback.low : pullback.high,
-        rr: opts.rr,
-        extra: { firstCandleSize: +sizeMultiple.toFixed(1), pullbackTime: pullback.date.toISOString() },
-      });
-    }
-    // new pullback candle, or a deeper one replacing it
-    const isPullback = long ? c.low < prev.low : c.high > prev.high;
-    const deeper = !pullback || (long ? c.low < pullback.low : c.high > pullback.high);
-    if (isPullback && deeper) pullback = c;
-  }
-  return null;
-}
-
-// Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
-// Target fills are limit orders and don't pay slippage.
-function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, rr = null, extra = {} }) {
-  const long = side === "long";
-  if (long ? entry <= stop : entry >= stop) return null;
-  const riskPerShare = Math.abs(entry - stop);
-  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
-  if (qty < 1) return null;
-  const target = rr == null ? null : long ? entry + riskPerShare * rr : entry - riskPerShare * rr;
-
-  const result = simulate({ candles, entryIdx, side, stop, target });
-  const fillEntry = slip(entry, side, true);
-  const fillExit = result.limit ? result.exit : slip(result.exit, side, false);
-  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
-  const cost = charges(side, qty, fillEntry, fillExit);
-  return {
-    symbol,
-    day,
-    time: candles[entryIdx].date.toISOString(),
-    side,
-    ...extra,
-    qty,
-    entry: +fillEntry.toFixed(2),
-    stop: +stop.toFixed(2),
-    target: target == null ? null : +target.toFixed(2),
     exit: +fillExit.toFixed(2),
     reason: result.reason,
     gross: +gross.toFixed(2),
@@ -324,7 +238,7 @@ function main() {
     console.error("No data found. Run: node server/backtest/fetchData.js");
     process.exit(1);
   }
-  // the stocks picked by fetchData, in liquidity order; only the top 100 are traded (same as the signals)
+  // the stocks picked by fetchData, in liquidity order; only the top 100 are traded
   const universePath = path.join(DATA_DIR, "_universe.json");
   const ranked = fs.existsSync(universePath) ? JSON.parse(fs.readFileSync(universePath, "utf8")) : null;
   const wanted = ranked ? new Set(ranked.slice(0, TOP_STOCKS)) : null;
@@ -337,6 +251,10 @@ function main() {
     { name: "Gap >= 2% fade, NO Nifty check (paper signals)", niftyMax: null },
     { name: "Gap >= 2% fade, Nifty check 0.4%", niftyMax: 0.4 },
     { name: "Gap >= 2% fade, Nifty check 0.2%", niftyMax: 0.2 },
+    // break by any of the next 3 candles (9:20, 9:25, 9:30) instead of only 9:20
+    { name: "Gap >= 2% fade, break within 3 candles, NO Nifty check", niftyMax: null, breakCandles: 3 },
+    { name: "Gap >= 2% fade, break within 3 candles, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3 },
+    { name: "Gap >= 2% fade, break within 3 candles, Nifty check 0.2%", niftyMax: 0.2, breakCandles: 3 },
     // Test 1: only big gaps
     { name: "TEST 1: Gap >= 4% fade, Nifty check 0.4%", minGap: 4, niftyMax: 0.4 },
     { name: "TEST 1: Gap >= 4% fade, NO Nifty check (reference)", minGap: 4, niftyMax: null },
@@ -344,13 +262,7 @@ function main() {
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
-  const bigCandleVariants = [
-    { name: "BIG CANDLE: 1st candle >= 2x avg range, 5 inside, breakout + pullback breakout, hold 15:15", bigMultiple: 2, rr: null },
-    { name: "BIG CANDLE: 1st candle >= 2x avg range, 5 inside, breakout + pullback breakout, RR=2", bigMultiple: 2, rr: 2 },
-    { name: "BIG CANDLE: 1st candle >= 3x avg range, 5 inside, breakout + pullback breakout, hold 15:15", bigMultiple: 3, rr: null },
-    { name: "BIG CANDLE: same setup, ANY 1st candle size (reference), hold 15:15", bigMultiple: 0, rr: null },
-  ];
-  const trades = Object.fromEntries([...variants, ...bigCandleVariants].map((v) => [v.name, []]));
+  const trades = Object.fromEntries(variants.map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -367,13 +279,9 @@ function main() {
       // yesterday's % change (yesterday's close vs the day before), for test 3
       const twoDaysAgo = days[d - 2]?.candles;
       const prevDayChange = twoDaysAgo ? ((prevClose - twoDaysAgo[twoDaysAgo.length - 1].close) / twoDaysAgo[twoDaysAgo.length - 1].close) * 100 : null;
-      const ctx = { symbol, day, candles, prevCandles, prevClose, prevDayChange, niftyChange };
+      const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
-        if (t) trades[v.name].push(t);
-      }
-      for (const v of bigCandleVariants) {
-        const t = bigCandlePullbackTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
