@@ -60,7 +60,7 @@ function readSettings() {
     // other extreme, held to 15:15 (PF ~2.6, profitable in both halves of Oct 2024 - Oct 2026).
     strategies: (process.env.AUTOTRADE_STRATEGIES || "orb").split(",").map((s) => s.trim()).filter(Boolean),
     symbols: (process.env.AUTOTRADE_SYMBOLS || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
-    universeSize: envNumber("AUTOTRADE_UNIVERSE_SIZE", 100),
+    universeSize: envNumber("AUTOTRADE_UNIVERSE_SIZE", 0), // 0 = all F&O stocks; N = top N of the backtest list
     slots,
     leverage: envNumber("AUTOTRADE_LEVERAGE", 1),
     paperCapital: envNumber("AUTOTRADE_PAPER_CAPITAL", 0),
@@ -190,9 +190,10 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   async function loadUniverse() {
     const [nfo, nse] = await Promise.all([getInstruments("NFO"), getInstruments("NSE")]);
     const fno = new Set(nfo.filter((i) => i.instrument_type === "FUT").map((i) => i.name));
-    // trade the backtested stocks (the file is in liquidity order; top AUTOTRADE_UNIVERSE_SIZE) unless symbols are set
+    // all F&O stocks by default; AUTOTRADE_UNIVERSE_SIZE=N limits it to the top N of the backtest list
+    // (that file is in liquidity order); AUTOTRADE_SYMBOLS overrides both
     let wanted = state.settings.symbols.length ? new Set(state.settings.symbols) : null;
-    if (!wanted && fs.existsSync(BACKTEST_UNIVERSE_PATH)) {
+    if (!wanted && state.settings.universeSize > 0 && fs.existsSync(BACKTEST_UNIVERSE_PATH)) {
       const ranked = JSON.parse(fs.readFileSync(BACKTEST_UNIVERSE_PATH, "utf8"));
       wanted = new Set(ranked.slice(0, state.settings.universeSize));
     }
