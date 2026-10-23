@@ -27,6 +27,12 @@ const istToday = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0,
 
 const timeIST = (date) => new Date(date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
 
+// when the gap break window closes: 9:25 for 1 candle after 9:15, 9:35 for 3
+const breakEndLabel = (settings) => {
+    const minute = 9 * 60 + 20 + 5 * Math.max(1, settings?.orbBreakCandles || 1);
+    return `${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, "0")}`;
+};
+
 const statusText = (p) => {
     if (p.status === "open") return "open · exit by 15:15";
     if (p.exitReason === "stop") return "stop hit";
@@ -113,7 +119,7 @@ const SignalsPanel = () => {
                     {settings && (
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
                             Gap ≥ {settings.orbMinGapPct}% fade: gap-up → SELL below the 1st 5-min candle's low, gap-down → BUY above its high
-                            (break before 9:25){settings.niftyFilter ? `, Nifty not more than ${settings.niftyMaxAgainstPct}% with the gap` : ""} ·
+                            (break before {breakEndLabel(settings)}){settings.niftyFilter ? `, Nifty not more than ${settings.niftyMaxAgainstPct}% with the gap` : ""} ·
                             stop at the 1st candle's other end · exit by 15:15
                         </Typography>
                     )}
@@ -171,7 +177,9 @@ const SignalsPanel = () => {
 
             {watchlist.length > 0 && (
                 <Box sx={{ mt: 2 }}>
-                    <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>9:20 watchlist - trades only if the level breaks before 9:25</Typography>
+                    <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>
+                        9:20 watchlist - trades only if the level breaks before {breakEndLabel(settings)} without hitting the stop first
+                    </Typography>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                         {watchlist.map((c) => (
                             <Chip

@@ -74,6 +74,8 @@ function readSettings() {
     orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 2),
     orbMaxGapPct: envNumber("AUTOTRADE_ORB_MAX_GAP_PCT", 100),
     orbEntry: process.env.AUTOTRADE_ORB_ENTRY === "close" ? "close" : "break",
+    // the break may come on any of the first N candles after 9:15 (3 = 9:20, 9:25 or 9:30, valid until 9:35)
+    orbBreakCandles: envNumber("AUTOTRADE_ORB_BREAK_CANDLES", 3),
     orbRR: envNumber("AUTOTRADE_ORB_RR", 0), // target = RR x first-candle range; 0 = hold to square-off
     engulfeStopPct: envNumber("AUTOTRADE_ENGULFE_STOP_PCT", 1), // reference distance for stop/target
     engulfeRR: envNumber("AUTOTRADE_ENGULFE_RR", 0),
@@ -83,6 +85,10 @@ function readSettings() {
     squareOff: parseClock(process.env.AUTOTRADE_SQUARE_OFF, 15 * 60 + 15),
   };
 }
+
+// minute of day when the gap break window closes (9:25 for 1 candle, 9:35 for 3)
+const breakWindowEnd = (settings) => 9 * 60 + 20 + 5 * Math.max(1, settings.orbBreakCandles);
+const clockLabel = (minute) => `${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, "0")}`;
 
 function istParts(date) {
   const ist = new Date(date.getTime() + IST_OFFSET_MS);
@@ -403,17 +409,29 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     if (!pending.length) return;
 
     if (state.settings.orbEntry === "break") {
-      // 9:20-9:25: the 2nd candle is forming; enter when price crosses the level and the 2nd candle's
-      // volume so far (day volume minus 1st candle) already passes the volume check
-      if (minute >= 9 * 60 + 25) {
+      // from 9:20 until the break window closes: enter when price crosses the level (the volume check uses
+      // the day's volume so far minus the 1st candle). A candidate whose stop side trades first is dropped.
+      if (minute >= breakWindowEnd(state.settings)) {
         log(`Gap window closed. Not triggered: ${pending.map((c) => c.symbol).join(", ")}`);
         state.orbCandidates = [];
         return;
       }
       const quotes = await getQuotes(pending.map((c) => c.symbol));
+      const stoppedFirst = new Set(
+        pending
+          .filter((c) => {
+            const ltp = quotes[c.symbol]?.last_price;
+            return ltp && (c.side === "short" ? ltp > c.stopLevel : ltp < c.stopLevel);
+          })
+          .map((c) => c.symbol)
+      );
+      if (stoppedFirst.size) {
+        log(`Gap setup cancelled (stop side traded first): ${[...stoppedFirst].join(", ")}`);
+        state.orbCandidates = state.orbCandidates.filter((c) => !stoppedFirst.has(c.symbol));
+      }
       const broken = pending.filter((c) => {
         const ltp = quotes[c.symbol]?.last_price;
-        return ltp && (c.side === "short" ? ltp < c.level : ltp > c.level);
+        return ltp && !stoppedFirst.has(c.symbol) && (c.side === "short" ? ltp < c.level : ltp > c.level);
       });
       if (!broken.length) return;
       const niftyChange = state.settings.niftyFilter ? await getNiftyChange() : null;
@@ -579,27 +597,41 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     if (Math.abs(gapPct) < settings.orbMinGapPct || Math.abs(gapPct) >= settings.orbMaxGapPct) return null;
 
     const side = gapPct > 0 ? "short" : "long";
-    const level = side === "short" ? c1.low : c1.high;
+    const short = side === "short";
+    const level = short ? c1.low : c1.high;
+    const stopLevel = short ? c1.high : c1.low;
+    let entryIdx = null;
     let entry;
     if (settings.orbEntry === "break") {
-      if (!(side === "short" ? c2.low < level : c2.high > level)) return null;
-      entry = side === "short" ? Math.min(level, c2.open) : Math.max(level, c2.open);
+      // the break may come on any of the next orbBreakCandles candles; crossing the stop side first cancels it
+      for (let k = 1; k <= settings.orbBreakCandles && k < session.today.length; k += 1) {
+        const c = session.today[k];
+        if (short ? c.low < level : c.high > level) {
+          entryIdx = k;
+          entry = short ? Math.min(level, c.open) : Math.max(level, c.open);
+          break;
+        }
+        if (short ? c.high > stopLevel : c.low < stopLevel) return null;
+      }
+      if (entryIdx == null) return null;
     } else {
-      if (!(side === "short" ? c2.close < level : c2.close > level)) return null;
+      if (!(short ? c2.close < level : c2.close > level)) return null;
+      entryIdx = 1;
       entry = c2.close;
     }
-    const vol = volumeAt(session.history, session.offset + 1);
+    const breakCandle = session.today[entryIdx];
+    const vol = volumeAt(session.history, session.offset + entryIdx);
     if (!vol.ok) return null;
-    // Nifty measured at the 2nd candle's close, as in the backtest
-    const nifty = niftyCheck(side, niftyChangeAt(c2.date));
+    // Nifty measured at the breakout candle's close, as in the backtest
+    const nifty = niftyCheck(side, niftyChangeAt(breakCandle.date));
     if (!nifty.ok) return null;
     return paperPosition({
       stock,
       session,
-      strategy: side === "short" ? "GAP-UP SELL" : "GAP-DOWN BUY",
+      strategy: short ? "GAP-UP SELL" : "GAP-DOWN BUY",
       side,
-      entryIdx: 1,
-      fromIdx: 2,
+      entryIdx,
+      fromIdx: entryIdx + 1,
       entry,
       refDistance: c1.high - c1.low,
       stopPrice: side === "short" ? c1.high : c1.low,
@@ -727,7 +759,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
   }
 
-  // 9:20 heads-up: the stocks that gapped and the level that triggers the trade before 9:25, so an
+  // 9:20 heads-up: the stocks that gapped and the level that triggers the trade before the window closes, so an
   // SL (stop-entry) order can be placed in time.
   async function sendWatchlistAlert() {
     const { settings } = state;
@@ -745,9 +777,10 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         ? `🔴 SELL ${c.symbol} if below ${money(c.level)} · stop ${money(c.stopLevel)} · gap +${c.gapPct.toFixed(2)}%`
         : `🟢 BUY ${c.symbol} if above ${money(c.level)} · stop ${money(c.stopLevel)} · gap ${c.gapPct.toFixed(2)}%`
     );
+    const until = clockLabel(breakWindowEnd(settings));
     const rule = settings.niftyFilter
-      ? `Valid only if it breaks before 9:25 and Nifty is not more than ${settings.niftyMaxAgainstPct}% in the gap's direction.`
-      : "Valid only if it breaks before 9:25.";
+      ? `Valid only if it breaks before ${until} without trading through the stop first, and Nifty is not more than ${settings.niftyMaxAgainstPct}% in the gap's direction.`
+      : `Valid only if it breaks before ${until} without trading through the stop first.`;
     sendAlert([`👀 9:20 watchlist (${state.orbCandidates.length})`, ...lines, rule + niftyText].join("\n"));
   }
 
@@ -769,7 +802,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   async function paperTick(now) {
     const marketOpen = now.weekday >= 1 && now.weekday <= 5 && now.minute >= 9 * 60 + 15 && now.minute <= 15 * 60 + 30;
     const watchlistWindow = now.minute > 9 * 60 + 20 || (now.minute === 9 * 60 + 20 && now.second >= 5);
-    if (marketOpen && state.settings.strategies.includes("orb") && !state.orbPrepared && watchlistWindow && now.minute < 9 * 60 + 25) {
+    if (marketOpen && state.settings.strategies.includes("orb") && !state.orbPrepared && watchlistWindow && now.minute < breakWindowEnd(state.settings)) {
       await prepareOrb();
       await sendWatchlistAlert();
     }
