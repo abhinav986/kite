@@ -3,7 +3,8 @@
 //   (gap-down, BUY); stop at the 1st candle's other end; held until 15:15. Top 100 most liquid F&O stocks.
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, plus TEST 1 (gaps >= 4% only) and TEST 3 (skip when the stock
-// already moved >= 3% the same way yesterday). Results go to server/backtest/results.json.
+// already moved >= 3% the same way yesterday). Also tested: the "stocks in play" opening-range breakout
+// (see inPlayBreakoutTrade). Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
 //
@@ -30,6 +31,7 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
+const LAST_ENTRY_MINUTE = 14 * 60 + 30; // no new entries after 14:30, same as the signals
 
 // ---------- data ----------
 
@@ -166,6 +168,81 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   };
 }
 
+// ---------- strategy 2: "stocks in play" opening-range breakout ----------
+//
+// The 9:15-9:30 range (first 3 candles) closed green -> BUY when a later candle (9:30-14:30) breaks the
+// range high; red -> SELL on a break of the range low. Stop = the other side of the range, exit 15:15.
+// opts.minRvol: the 9:15-9:30 volume must be >= this multiple of its average over the previous 10 sessions
+// (0 = no filter). If the other side of the range breaks first, the setup is cancelled.
+function inPlayBreakoutTrade({ symbol, day, candles, openingRvol }, opts) {
+  if (opts.minRvol && !(openingRvol >= opts.minRvol)) return null;
+  const range = candles.slice(0, 3);
+  const open = range[0].open;
+  const close = range[2].close;
+  if (close === open) return null;
+
+  const side = close > open ? "long" : "short";
+  const long = side === "long";
+  const rangeHigh = Math.max(...range.map((c) => c.high));
+  const rangeLow = Math.min(...range.map((c) => c.low));
+  const level = long ? rangeHigh : rangeLow;
+  const stop = long ? rangeLow : rangeHigh;
+
+  for (let k = 3; k < candles.length; k += 1) {
+    const c = candles[k];
+    if (c.minute > LAST_ENTRY_MINUTE) return null;
+    if (long ? c.high > level : c.low < level) {
+      const entry = long ? Math.max(level, c.open) : Math.min(level, c.open);
+      return buildTrade({ symbol, day, candles, entryIdx: k, side, entry, stop, extra: { openingRvol: openingRvol == null ? null : +openingRvol.toFixed(1) } });
+    }
+    if (long ? c.low < stop : c.high > stop) return null;
+  }
+  return null;
+}
+
+// Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
+function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, extra = {} }) {
+  const long = side === "long";
+  if (long ? entry <= stop : entry >= stop) return null;
+  const riskPerShare = Math.abs(entry - stop);
+  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
+  if (qty < 1) return null;
+
+  const result = simulate({ candles, entryIdx, side, stop });
+  const fillEntry = slip(entry, side, true);
+  const fillExit = slip(result.exit, side, false);
+  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
+  const cost = charges(side, qty, fillEntry, fillExit);
+  return {
+    symbol,
+    day,
+    time: candles[entryIdx].date.toISOString(),
+    side,
+    ...extra,
+    qty,
+    entry: +fillEntry.toFixed(2),
+    stop: +stop.toFixed(2),
+    exit: +fillExit.toFixed(2),
+    reason: result.reason,
+    gross: +gross.toFixed(2),
+    cost: +cost.toFixed(2),
+    net: +(gross - cost).toFixed(2),
+    r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
+  };
+}
+
+// 9:15-9:30 volume of session d vs its average over the previous 10 sessions (needs at least 5)
+function openingRvolFor(days, d) {
+  const openingVolume = (i) => days[i].candles.slice(0, 3).reduce((s, c) => s + (c.volume || 0), 0);
+  let sum = 0;
+  let n = 0;
+  for (let j = d - 1; j >= 0 && n < 10; j -= 1) {
+    sum += openingVolume(j);
+    n += 1;
+  }
+  return n >= 5 && sum > 0 ? openingVolume(d) / (sum / n) : null;
+}
+
 // ---------- metrics ----------
 
 let SPLIT_DAY = null;
@@ -243,7 +320,12 @@ function main() {
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
-  const trades = Object.fromEntries(variants.map((v) => [v.name, []]));
+  const inPlayVariants = [
+    { name: "IN PLAY: 15-min range breakout, opening RVOL >= 3x", minRvol: 3 },
+    { name: "IN PLAY: 15-min range breakout, opening RVOL >= 5x", minRvol: 5 },
+    { name: "IN PLAY: 15-min range breakout, NO RVOL filter (reference)", minRvol: 0 },
+  ];
+  const trades = Object.fromEntries([...variants, ...inPlayVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -260,9 +342,13 @@ function main() {
       // yesterday's % change (yesterday's close vs the day before), for test 3
       const twoDaysAgo = days[d - 2]?.candles;
       const prevDayChange = twoDaysAgo ? ((prevClose - twoDaysAgo[twoDaysAgo.length - 1].close) / twoDaysAgo[twoDaysAgo.length - 1].close) * 100 : null;
-      const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
+      const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange, openingRvol: openingRvolFor(days, d) };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
+        if (t) trades[v.name].push(t);
+      }
+      for (const v of inPlayVariants) {
+        const t = inPlayBreakoutTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
