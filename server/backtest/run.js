@@ -2,8 +2,8 @@
 //   gap >= 2% at the open -> fade it when the 2nd candle breaks the 1st candle's low (gap-up, SELL) or high
 //   (gap-down, BUY); stop at the 1st candle's other end; held until 15:15. Top 100 most liquid F&O stocks.
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
-// the limit) so the two can be compared.
-// Also tested: the first-candle volume burst setup (see volumeBurstTrade).
+// the limit) so the two can be compared, plus variants: (1) gap-fill target, (2) 2-4% vs > 4% gaps,
+// (3) 15-minute opening range, and (4) a mid-morning overextension reversal.
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -33,8 +33,6 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
-const VOLUME_BURST = Number(getArg("volumeBurst", 4)); // 1st candle volume vs previous day's average 5-min volume
-const LAST_ENTRY_MINUTE = 14 * 60 + 30; // no new entries after 14:30, same as the signals
 
 // ---------- data ----------
 
@@ -115,18 +113,18 @@ function simulate({ candles, entryIdx, side, stop, target = null }) {
 }
 
 // Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
-// Target (limit) fills don't pay slippage.
-function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, rr = null, extra = {} }) {
+// Target fills are limit orders and don't pay slippage.
+function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, target = null, extra = {} }) {
+  const long = side === "long";
+  if (long ? entry <= stop : entry >= stop) return null;
   const riskPerShare = Math.abs(entry - stop);
-  if (!(riskPerShare > 0)) return null;
   const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
   if (qty < 1) return null;
-  const target = rr == null ? null : side === "long" ? entry + riskPerShare * rr : entry - riskPerShare * rr;
 
   const result = simulate({ candles, entryIdx, side, stop, target });
   const fillEntry = slip(entry, side, true);
   const fillExit = result.limit ? result.exit : slip(result.exit, side, false);
-  const gross = (side === "long" ? fillExit - fillEntry : fillEntry - fillExit) * qty;
+  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
   const cost = charges(side, qty, fillEntry, fillExit);
   return {
     symbol,
@@ -147,87 +145,108 @@ function buildTrade({ symbol, day, candles, entryIdx, side, entry, stop, rr = nu
   };
 }
 
-// ---------- the strategy ----------
-
+// ---------- strategy: gap fade (paper signals) and its variants ----------
+//
+// opts.minGap / opts.maxGap: gap size range in % (default >= 2%)
+// opts.rangeMinutes: 5 = 1st 5-min candle, broken by the 2nd candle (paper signals);
+//                    15 = 9:15-9:30 range, broken within the next 15 minutes
+// opts.niftyMax:     skip when Nifty moves with the gap by more than this % (null = no check)
+// opts.gapFill:      take profit at yesterday's close (gap filled); otherwise stop or 15:15
 function gapFadeTrade({ symbol, day, candles, prevClose, niftyChange }, opts) {
-  const [c1, c2] = candles;
-  const gapPct = ((c1.open - prevClose) / prevClose) * 100;
-  if (Math.abs(gapPct) < MIN_GAP_PCT) return null;
+  const minGap = opts.minGap ?? MIN_GAP_PCT;
+  const maxGap = opts.maxGap ?? Infinity;
+  const rangeCandles = opts.rangeMinutes === 15 ? 3 : 1;
+  const range = candles.slice(0, rangeCandles);
+  const gapPct = ((range[0].open - prevClose) / prevClose) * 100;
+  if (Math.abs(gapPct) < minGap || Math.abs(gapPct) >= maxGap) return null;
 
   const side = gapPct > 0 ? "short" : "long";
-  const level = side === "short" ? c1.low : c1.high;
-  const stop = side === "short" ? c1.high : c1.low;
-  if (!(side === "short" ? c2.low < level : c2.high > level)) return null;
-  // a 2nd candle that opens beyond the level fills at its open
-  const entry = side === "short" ? Math.min(level, c2.open) : Math.max(level, c2.open);
+  const short = side === "short";
+  const rangeHigh = Math.max(...range.map((c) => c.high));
+  const rangeLow = Math.min(...range.map((c) => c.low));
+  const level = short ? rangeLow : rangeHigh;
+  const stop = short ? rangeHigh : rangeLow;
 
-  // Nifty filter: skip when Nifty moves with the gap by more than the limit at the 2nd candle's close
+  // the break must come within the next range-length of candles; a stop hit first cancels the setup
+  let entryIdx = null;
+  for (let k = rangeCandles; k < rangeCandles * 2; k += 1) {
+    const c = candles[k];
+    if (short ? c.low < level : c.high > level) {
+      entryIdx = k;
+      break;
+    }
+    if (short ? c.high > stop : c.low < stop) return null;
+  }
+  if (entryIdx == null) return null;
+  const breakCandle = candles[entryIdx];
+  // a candle that opens beyond the level fills at its open
+  const entry = short ? Math.min(level, breakCandle.open) : Math.max(level, breakCandle.open);
+
+  // Nifty filter, measured at the close of the breakout candle
   let nifty = null;
   if (opts.niftyMax != null) {
-    nifty = niftyChange(day, c2.minute);
+    nifty = niftyChange(day, breakCandle.minute);
     if (nifty == null) return null;
-    const withGap = side === "short" ? nifty : -nifty;
+    const withGap = short ? nifty : -nifty;
     if (withGap > opts.niftyMax) return null;
   }
+
+  // gap-fill target only when yesterday's close is still on the profit side of the entry
+  const target = opts.gapFill && (short ? prevClose < entry : prevClose > entry) ? prevClose : null;
 
   return buildTrade({
     symbol,
     day,
     candles,
-    entryIdx: 1,
+    entryIdx,
     side,
     entry,
     stop,
+    target,
     extra: { gapPct: +gapPct.toFixed(2), nifty: nifty == null ? null : +nifty.toFixed(2) },
   });
 }
 
-// ---------- strategy 2: first-candle volume burst, pullback, day-high/low breakout ----------
+// ---------- strategy: mid-morning overextension reversal ----------
 //
-// BUY: the 9:15 candle is green with volume >= VOLUME_BURST x the previous day's average 5-min volume,
-//      the 9:20 candle trades above its high, then a pullback candle (low below the previous candle's low),
-//      then the first candle that trades above the day's high -> buy at the day's high (or the open if it
-//      opens above). Stop = the pullback candle's low.
-// SELL: mirror image (red 9:15 candle, 9:20 below its low, pullback = high above the previous high, then a
-//      break of the day's low). Stop = the pullback candle's high.
-function volumeBurstTrade({ symbol, day, candles, prevCandles }, opts) {
-  const [c1, c2] = candles;
-  const prevAvgVolume = prevCandles.reduce((s, c) => s + (c.volume || 0), 0) / prevCandles.length;
-  const volumeRatio = prevAvgVolume > 0 ? c1.volume / prevAvgVolume : 0;
-  if (opts.volumeBurst && volumeRatio < opts.volumeBurst) return null;
-
-  let side = null;
-  if (c1.close > c1.open && c2.high > c1.high) side = "long";
-  else if (c1.close < c1.open && c2.low < c1.low) side = "short";
-  if (!side) return null;
-  const long = side === "long";
-
-  let extreme = long ? Math.max(c1.high, c2.high) : Math.min(c1.low, c2.low); // day's high / low so far
-  let pullback = null;
-  for (let k = 2; k < candles.length; k += 1) {
+// Between 10:30 and 12:00, a stock that closed the previous candle >= opts.movePct below yesterday's close
+// prints a higher low (candle low above the previous candle's low) -> BUY at the next candle's open, stop at
+// the day's low, held to 15:15. Mirror for shorts (>= movePct above, lower high, stop at the day's high).
+// opts.niftyFlat: only when Nifty is within +/- this % of its previous close (stock-specific move);
+// null = no check.
+function overextensionTrade({ symbol, day, candles, prevClose, niftyChange }, opts) {
+  let dayHigh = -Infinity;
+  let dayLow = Infinity;
+  for (let k = 0; k < candles.length - 1; k += 1) {
     const c = candles[k];
-    if (c.minute + 5 > LAST_ENTRY_MINUTE) return null;
-    if (pullback) {
-      const broke = long ? c.high > extreme : c.low < extreme;
-      if (broke) {
-        const entry = long ? Math.max(extreme, c.open) : Math.min(extreme, c.open);
-        const stop = long ? pullback.low : pullback.high;
-        return buildTrade({
-          symbol,
-          day,
-          candles,
-          entryIdx: k,
-          side,
-          entry,
-          stop,
-          rr: opts.rr,
-          extra: { volumeRatio: +volumeRatio.toFixed(1), pullbackTime: pullback.date.toISOString() },
-        });
-      }
-    } else if (long ? c.low < candles[k - 1].low : c.high > candles[k - 1].high) {
-      pullback = c;
+    dayHigh = Math.max(dayHigh, c.high);
+    dayLow = Math.min(dayLow, c.low);
+    if (k === 0 || c.minute < 10 * 60 + 30) continue;
+    if (c.minute > 12 * 60) return null;
+
+    const prev = candles[k - 1];
+    const move = ((prev.close - prevClose) / prevClose) * 100;
+    let side = null;
+    if (move <= -opts.movePct && c.low > prev.low) side = "long";
+    else if (move >= opts.movePct && c.high < prev.high) side = "short";
+    if (!side) continue;
+
+    let nifty = null;
+    if (opts.niftyFlat != null) {
+      nifty = niftyChange(day, prev.minute);
+      if (nifty == null || Math.abs(nifty) > opts.niftyFlat) continue;
     }
-    extreme = long ? Math.max(extreme, c.high) : Math.min(extreme, c.low);
+
+    return buildTrade({
+      symbol,
+      day,
+      candles,
+      entryIdx: k + 1,
+      side,
+      entry: candles[k + 1].open,
+      stop: side === "long" ? dayLow : dayHigh,
+      extra: { movePct: +move.toFixed(2), nifty: nifty == null ? null : +nifty.toFixed(2) },
+    });
   }
   return null;
 }
@@ -302,14 +321,21 @@ function main() {
     { name: "Gap >= 2% fade, NO Nifty check (paper signals)", niftyMax: null },
     { name: "Gap >= 2% fade, Nifty check 0.4%", niftyMax: 0.4 },
     { name: "Gap >= 2% fade, Nifty check 0.2%", niftyMax: 0.2 },
+    // 1. take profit when the gap fills
+    { name: "1. Gap fade + gap-fill target, NO Nifty check", niftyMax: null, gapFill: true },
+    { name: "1. Gap fade + gap-fill target, Nifty check 0.4%", niftyMax: 0.4, gapFill: true },
+    // 2. normal vs news-sized gaps
+    { name: "2. Gap 2-4% only, NO Nifty check", niftyMax: null, maxGap: 4 },
+    { name: "2. Gap above 4% only, NO Nifty check", niftyMax: null, minGap: 4 },
+    // 3. 15-minute opening range
+    { name: "3. Gap fade on 15-min range, NO Nifty check", niftyMax: null, rangeMinutes: 15 },
+    { name: "3. Gap fade on 15-min range, Nifty check 0.4%", niftyMax: 0.4, rangeMinutes: 15 },
   ];
-  const burstVariants = [
-    { name: `Volume burst ${VOLUME_BURST}x + pullback + day-high/low break, stop pullback, hold 15:15`, volumeBurst: VOLUME_BURST, rr: null },
-    { name: `Volume burst ${VOLUME_BURST}x + pullback + day-high/low break, stop pullback, RR=2`, volumeBurst: VOLUME_BURST, rr: 2 },
-    { name: "Same setup, NO volume filter, stop pullback, hold 15:15", volumeBurst: 0, rr: null },
-    { name: "Same setup, NO volume filter, stop pullback, RR=2", volumeBurst: 0, rr: 2 },
+  const overextensionVariants = [
+    { name: "4. Overextension >= 3% (10:30-12:00), Nifty flat +/-0.3%", movePct: 3, niftyFlat: 0.3 },
+    { name: "4. Overextension >= 3% (10:30-12:00), NO Nifty check", movePct: 3, niftyFlat: null },
   ];
-  const trades = Object.fromEntries([...variants, ...burstVariants].map((v) => [v.name, []]));
+  const trades = Object.fromEntries([...variants, ...overextensionVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -322,13 +348,13 @@ function main() {
       if (!firstDay || day < firstDay) firstDay = day;
       if (!lastDay || day > lastDay) lastDay = day;
       const prevCandles = days[d - 1].candles;
-      const ctx = { symbol, day, candles, prevCandles, prevClose: prevCandles[prevCandles.length - 1].close, niftyChange };
+      const ctx = { symbol, day, candles, prevClose: prevCandles[prevCandles.length - 1].close, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
-      for (const v of burstVariants) {
-        const t = volumeBurstTrade(ctx, v);
+      for (const v of overextensionVariants) {
+        const t = overextensionTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
