@@ -4,6 +4,7 @@
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
+// Also tested: a monthly momentum rotation held as delivery (see momentumBacktest), against buy & hold.
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -181,6 +182,168 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   };
 }
 
+// ---------- strategy 2: monthly momentum rotation (delivery / CNC) ----------
+//
+// On the first trading day of each month, rank the stocks by their return over the last LOOKBACK_SESSIONS
+// sessions (up to the previous close) and hold the top N with equal money: stocks that drop out are sold,
+// new entrants bought, the rest kept. Trades at that day's open with slippage and Zerodha delivery charges.
+
+const MOMENTUM_CAPITAL = Number(getArg("capital", 300000));
+const LOOKBACK_SESSIONS = 126; // ~6 months
+
+function deliveryCharges(side, value) {
+  const stt = value * 0.001; // 0.1% on buy and sell
+  const exchange = value * 0.0000297;
+  const sebi = value * 0.000001;
+  const stamp = side === "buy" ? value * 0.00015 : 0;
+  const gst = 0.18 * (exchange + sebi);
+  const dp = side === "sell" ? 15.93 : 0; // depository charge per stock sold
+  return stt + exchange + sebi + stamp + gst + dp;
+}
+
+// symbol -> { days: [day], open: Map(day -> price), close: Map(day -> price), idx: Map(day -> i) }
+function loadDailySeries(files) {
+  const series = new Map();
+  for (const file of files) {
+    const days = loadDays(path.join(DATA_DIR, file));
+    series.set(file.replace(/\.json$/, ""), {
+      days: days.map((d) => d.day),
+      open: new Map(days.map((d) => [d.day, d.candles[0].open])),
+      close: new Map(days.map((d) => [d.day, d.candles[d.candles.length - 1].close])),
+      idx: new Map(days.map((d, i) => [d.day, i])),
+    });
+  }
+  return series;
+}
+
+// Equity-curve metrics in the same shape as summarise(), plus return %.
+function summariseEquity({ curve, closed, charges, splitDay, extra = {} }) {
+  const start = MOMENTUM_CAPITAL;
+  const end = curve.length ? curve[curve.length - 1].equity : start;
+  let peak = start;
+  let maxDd = 0;
+  const yearStart = {};
+  let lastEquity = start;
+  let splitEquity = null;
+  for (const point of curve) {
+    const year = point.day.slice(0, 4);
+    if (!(year in yearStart)) yearStart[year] = lastEquity;
+    if (splitEquity == null && point.day >= splitDay) splitEquity = lastEquity;
+    peak = Math.max(peak, point.equity);
+    maxDd = Math.max(maxDd, peak - point.equity);
+    lastEquity = point.equity;
+  }
+  const years = Object.keys(yearStart);
+  const netByYear = Object.fromEntries(years.map((y, i) => [y, Math.round((i + 1 < years.length ? yearStart[years[i + 1]] : end) - yearStart[y])]));
+  const wins = closed.filter((p) => p.net > 0);
+  const grossWin = wins.reduce((s, p) => s + p.net, 0);
+  const grossLoss = -closed.filter((p) => p.net <= 0).reduce((s, p) => s + p.net, 0);
+  const firstHalfNet = Math.round((splitEquity ?? end) - start);
+  const secondHalfNet = Math.round(end - (splitEquity ?? end));
+  const daysSpan = curve.length ? (Date.parse(curve[curve.length - 1].day) - Date.parse(curve[0].day)) / 86400000 : 0;
+  return {
+    trades: closed.length,
+    winRate: closed.length ? +((wins.length / closed.length) * 100).toFixed(1) : null,
+    avgR: null,
+    netPnl: Math.round(end - start),
+    returnPct: +(((end - start) / start) * 100).toFixed(1),
+    cagrPct: daysSpan > 30 ? +((Math.pow(end / start, 365 / daysSpan) - 1) * 100).toFixed(1) : null,
+    totalCharges: Math.round(charges),
+    profitFactor: grossLoss ? +(grossWin / grossLoss).toFixed(2) : null,
+    maxDrawdown: Math.round(maxDd),
+    netByYear,
+    firstHalfNet,
+    secondHalfNet,
+    ...extra,
+  };
+}
+
+function momentumBacktest(files, opts) {
+  const series = loadDailySeries(files);
+  const calendar = [...new Set([...series.values()].flatMap((s) => s.days))].sort();
+  // rebalance on the first session of each month once LOOKBACK_SESSIONS of history exist
+  const rebalanceDays = calendar.filter((day, i) => i > LOOKBACK_SESSIONS && day.slice(0, 7) !== calendar[i - 1].slice(0, 7));
+  if (!rebalanceDays.length) return null;
+  const testStart = rebalanceDays[0];
+  const testDays = calendar.filter((d) => d >= testStart);
+  const splitDay = testDays[Math.floor(testDays.length / 2)];
+
+  const momentumOf = (symbol, day) => {
+    const s = series.get(symbol);
+    const i = s.idx.get(day);
+    if (i == null || i < LOOKBACK_SESSIONS + 1) return null;
+    const prevClose = s.close.get(s.days[i - 1]);
+    const pastClose = s.close.get(s.days[i - 1 - LOOKBACK_SESSIONS]);
+    return pastClose ? (prevClose - pastClose) / pastClose : null;
+  };
+
+  let cash = MOMENTUM_CAPITAL;
+  let charges = 0;
+  const holdings = new Map(); // symbol -> { qty, cost, entryDay, lastClose }
+  const closed = [];
+  const curve = [];
+  const lastClose = (symbol, day) => series.get(symbol).close.get(day) ?? holdings.get(symbol).lastClose;
+
+  const sell = (symbol, day) => {
+    const h = holdings.get(symbol);
+    const openPrice = series.get(symbol).open.get(day) ?? h.lastClose;
+    const value = h.qty * openPrice * (1 - SLIPPAGE);
+    const fee = deliveryCharges("sell", value);
+    charges += fee;
+    cash += value - fee;
+    closed.push({ symbol, entryDay: h.entryDay, exitDay: day, net: +(value - fee - h.cost).toFixed(2) });
+    holdings.delete(symbol);
+  };
+  const buy = (symbol, day, budget) => {
+    const openPrice = series.get(symbol).open.get(day);
+    const fill = openPrice * (1 + SLIPPAGE);
+    const qty = Math.floor(budget / (fill * 1.0012)); // leave room for charges
+    if (qty < 1) return;
+    const value = qty * fill;
+    const fee = deliveryCharges("buy", value);
+    charges += fee;
+    cash -= value + fee;
+    holdings.set(symbol, { qty, cost: value + fee, entryDay: day, lastClose: openPrice });
+  };
+
+  for (const day of testDays) {
+    if (opts.buyAndHold ? day === testStart : rebalanceDays.includes(day)) {
+      const ranked = [...series.keys()]
+        .map((symbol) => ({ symbol, mom: momentumOf(symbol, day) }))
+        .filter((r) => r.mom != null && series.get(r.symbol).open.has(day))
+        .filter((r) => !opts.positiveOnly || r.mom > 0)
+        .sort((a, b) => b.mom - a.mom);
+      const target = new Set((opts.buyAndHold ? ranked : ranked.slice(0, opts.topN)).map((r) => r.symbol));
+      for (const symbol of [...holdings.keys()]) if (!target.has(symbol)) sell(symbol, day);
+      const entrants = [...target].filter((s) => !holdings.has(s));
+      const slots = opts.buyAndHold ? target.size : opts.topN;
+      const equityNow = cash + [...holdings.entries()].reduce((s, [sym, h]) => s + h.qty * (series.get(sym).open.get(day) ?? h.lastClose), 0);
+      entrants.forEach((symbol, i) => buy(symbol, day, Math.min(cash / (entrants.length - i), equityNow / slots)));
+    }
+    for (const [symbol, h] of holdings) h.lastClose = lastClose(symbol, day);
+    curve.push({ day, equity: cash + [...holdings.values()].reduce((s, h) => s + h.qty * h.lastClose, 0) });
+  }
+  // still-open positions count in the equity, and as closed at the last close for win rate / profit factor
+  const lastDay = testDays[testDays.length - 1];
+  const openPositions = [...holdings.entries()].map(([symbol, h]) => ({ symbol, entryDay: h.entryDay, exitDay: null, net: +(h.qty * h.lastClose - h.cost).toFixed(2) }));
+  return {
+    summary: summariseEquity({ curve, closed: [...closed, ...openPositions], charges, splitDay, extra: { period: `${testStart} -> ${lastDay}` } }),
+    positions: [...closed, ...openPositions],
+  };
+}
+
+// Nifty 50 buy & hold over the same test period (index, no charges)
+function niftyBuyAndHold(fromDay) {
+  const file = path.join(DATA_DIR, "_NIFTY.json");
+  if (!fs.existsSync(file)) return null;
+  const days = loadDays(file).filter((d) => d.day >= fromDay);
+  if (!days.length) return null;
+  const base = days[0].candles[0].open;
+  const curve = days.map((d) => ({ day: d.day, equity: MOMENTUM_CAPITAL * (d.candles[d.candles.length - 1].close / base) }));
+  const testDays = days.map((d) => d.day);
+  return summariseEquity({ curve, closed: [], charges: 0, splitDay: testDays[Math.floor(testDays.length / 2)] });
+}
+
 // ---------- metrics ----------
 
 let SPLIT_DAY = null;
@@ -297,6 +460,30 @@ function main() {
     period: { from: firstDay, to: lastDay, splitDay: SPLIT_DAY },
     variants: Object.fromEntries(Object.entries(trades).map(([name, list]) => [name, summarise(list)])),
   };
+
+  // Momentum rotation: a candidate must make money in both halves and every year AND beat simply holding
+  // all the same stocks (the benchmark), since today's liquid stocks tend to be past winners.
+  const benchmark = momentumBacktest(files, { buyAndHold: true });
+  const momentumRuns = [
+    ["MOMENTUM: top 5 by 6-month return, monthly rebalance", { topN: 5 }],
+    ["MOMENTUM: top 10 by 6-month return, monthly rebalance", { topN: 10 }],
+    ["MOMENTUM: top 10, only stocks with 6-month return > 0 (else cash)", { topN: 10, positiveOnly: true }],
+  ];
+  for (const [name, opts] of momentumRuns) {
+    const run = momentumBacktest(files, opts);
+    if (!run) continue;
+    const s = run.summary;
+    s.candidate =
+      s.firstHalfNet > 0 && s.secondHalfNet > 0 && Object.values(s.netByYear).every((v) => v > 0) && (!benchmark || s.netPnl > benchmark.summary.netPnl);
+    results.variants[name] = s;
+    trades[name] = run.positions;
+  }
+  if (benchmark) {
+    results.variants["BENCHMARK: buy & hold all the same stocks equally"] = { ...benchmark.summary, candidate: false };
+    const nifty = niftyBuyAndHold(benchmark.summary.period.split(" -> ")[0]);
+    if (nifty) results.variants["BENCHMARK: Nifty 50 buy & hold"] = { ...nifty, candidate: false };
+    results.momentumPeriod = benchmark.summary.period;
+  }
 
   fs.writeFileSync(path.join(process.cwd(), "server", "backtest", "results.json"), JSON.stringify(results, null, 2));
   fs.writeFileSync(path.join(process.cwd(), "server", "backtest", "trades.json"), JSON.stringify(trades));

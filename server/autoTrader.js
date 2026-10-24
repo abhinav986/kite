@@ -813,6 +813,141 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     await replayPaperSession(now, marketOpen);
   }
 
+  // ---------------- History Analysis: one stock, past months ----------------
+
+  // All NSE stocks that have F&O futures, for the All Instruments list.
+  async function listFnoStocks() {
+    const [nfo, nse] = await Promise.all([getInstruments("NFO"), getInstruments("NSE")]);
+    const lotSize = new Map();
+    for (const i of nfo) if (i.instrument_type === "FUT" && !lotSize.has(i.name)) lotSize.set(i.name, i.lot_size);
+    return nse
+      .filter((i) => i.segment === "NSE" && i.instrument_type === "EQ" && lotSize.has(i.tradingsymbol))
+      .map((i) => ({ symbol: i.tradingsymbol, name: i.name, token: i.instrument_token, tick: i.tick_size || 0.05, lotSize: lotSize.get(i.tradingsymbol) }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
+
+  // 5-min candles from fromKey to today, fetched in <= 90-day chunks (Kite allows 100 days per request)
+  async function fetchCandleRange(token, fromKey) {
+    const today = istNow().dateKey;
+    const all = [];
+    for (let start = fromKey; start <= today; start = shiftDateKey(start, 90)) {
+      const end = shiftDateKey(start, 89) < today ? shiftDateKey(start, 89) : today;
+      await throttleHistorical();
+      const chunk = await withKiteAuth(() => kite.getHistoricalData(token, "5minute", kiteTime(start, 9 * 60 + 15), kiteTime(end, 15 * 60 + 30), false, false));
+      all.push(...(chunk || []));
+    }
+    const nowMs = Date.now();
+    return all.filter((c) => new Date(c.date).getTime() + 5 * 60000 <= nowMs);
+  }
+
+  function groupSessions(candles) {
+    const byDay = new Map();
+    for (const c of candles) {
+      const minute = candleMinute(c);
+      if (minute < 9 * 60 + 15 || minute > 15 * 60 + 25) continue;
+      const day = candleDay(c);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(c);
+    }
+    return [...byDay.entries()].map(([day, list]) => ({ day, candles: list }));
+  }
+
+  const stockHistoryCache = new Map(); // `${token}-${months}` -> { at, result }
+
+  // Runs the paper-signal rules (same replayGap as the live scan) on one stock for the past `months`, and
+  // returns each signal day with its candles and the previous day's, for the table and the chart.
+  async function backtestStock({ token, months = 6 }) {
+    const cacheKey = `${token}-${months}`;
+    const cached = stockHistoryCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 10 * 60000) return cached.result;
+
+    if (state.capital == null) await loadCapital();
+    const stocks = await listFnoStocks();
+    const stock = stocks.find((s) => String(s.token) === String(token));
+    if (!stock) throw new Error("Not an F&O stock");
+
+    const today = istNow().dateKey;
+    const fromKey = shiftDateKey(today, -Math.round(months * 30.5) - 7); // a week extra for the first previous day
+    const sessions = groupSessions(await fetchCandleRange(stock.token, fromKey));
+
+    let niftyChangeAt = () => null;
+    if (state.settings.niftyFilter) {
+      const niftySessions = groupSessions(await fetchCandleRange(NIFTY_TOKEN, fromKey));
+      const changes = new Map();
+      niftySessions.forEach(({ candles }, i) => {
+        if (!i) return;
+        const prev = niftySessions[i - 1].candles;
+        const prevClose = prev[prev.length - 1].close;
+        for (const c of candles) changes.set(new Date(c.date).getTime(), ((c.close - prevClose) / prevClose) * 100);
+      });
+      niftyChangeAt = (date) => changes.get(new Date(date).getTime()) ?? null;
+    }
+
+    const periodStart = shiftDateKey(today, -Math.round(months * 30.5));
+    const signals = [];
+    const chartCandles = {};
+    let gapDays = 0;
+    for (let i = 1; i < sessions.length; i += 1) {
+      const { day, candles } = sessions[i];
+      if (day < periodStart || candles.length < 2) continue;
+      const prev = sessions[i - 1].candles;
+      const prevClose = prev[prev.length - 1].close;
+      const gapPct = ((candles[0].open - prevClose) / prevClose) * 100;
+      if (Math.abs(gapPct) >= state.settings.orbMinGapPct) gapDays += 1;
+
+      const session = { day, today: candles, prev, history: [...prev, ...candles], offset: prev.length };
+      const p = replayGap(stock, session, niftyChangeAt);
+      if (!p) continue;
+      // R = points made / points risked (null when trading without a stop)
+      const exitPrice = p.exit ?? p.lastPrice;
+      const points = p.side === "long" ? exitPrice - p.entry : p.entry - exitPrice;
+      const r = p.stop != null && p.entry !== p.stop ? +(points / Math.abs(p.entry - p.stop)).toFixed(2) : null;
+      signals.push({ ...p, prevDay: sessions[i - 1].day, prevClose, gapPct: +gapPct.toFixed(2), points: +points.toFixed(2), r });
+      chartCandles[day] = candles;
+      chartCandles[sessions[i - 1].day] = prev;
+    }
+
+    const closed = signals.filter((p) => p.status === "closed");
+    const wins = closed.filter((p) => p.pnl > 0);
+    let equity = 0;
+    let peak = 0;
+    let maxDrawdown = 0;
+    for (const p of signals) {
+      equity += p.pnl;
+      peak = Math.max(peak, equity);
+      maxDrawdown = Math.max(maxDrawdown, peak - equity);
+    }
+    const result = {
+      symbol: stock.symbol,
+      name: stock.name,
+      from: periodStart,
+      to: today,
+      tradingDays: sessions.filter((s) => s.day >= periodStart).length,
+      gapDays,
+      slotCapital: state.slotCapital,
+      rules: {
+        minGapPct: state.settings.orbMinGapPct,
+        breakCandles: state.settings.orbBreakCandles,
+        niftyFilter: state.settings.niftyFilter,
+        useStopLoss: state.settings.useStopLoss,
+      },
+      summary: {
+        signals: signals.length,
+        wins: wins.length,
+        winRate: closed.length ? +((wins.length / closed.length) * 100).toFixed(1) : null,
+        totalPnl: +signals.reduce((s, p) => s + p.pnl, 0).toFixed(2),
+        avgR: signals.some((p) => p.r != null)
+          ? +(signals.reduce((s, p) => s + (p.r ?? 0), 0) / signals.filter((p) => p.r != null).length).toFixed(2)
+          : null,
+        maxDrawdown: +maxDrawdown.toFixed(2),
+      },
+      signals: signals.reverse(), // newest first
+      candles: chartCandles,
+    };
+    stockHistoryCache.set(cacheKey, { at: Date.now(), result });
+    return result;
+  }
+
   // Signals for a past date (date picker). Runs in the background; the UI polls until status is "done".
   // Finished past dates are cached since their candles don't change.
   function signalsForDate(dateKey) {
@@ -1018,6 +1153,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       return this.status();
     },
     signalsForDate,
+    listFnoStocks,
+    backtestStock,
     setMode(mode) {
       if (mode !== "live" && mode !== "paper") throw new Error("mode must be 'live' or 'paper'");
       if (state.settings.mode === "live" && activePositions().length) throw new Error("Close open live positions before switching mode");

@@ -59,6 +59,7 @@ const BacktestPanel = () => {
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>Strategy Backtest (5-min candles)</Typography>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
                             The paper-signal strategy (gap ≥ 2% fade) on the 100 most liquid F&O stocks, with and without the Nifty check, 2 years, after Zerodha charges and slippage.
+                            Plus a monthly momentum rotation (delivery, ₹3 lakh, after delivery charges) compared with buy & hold.
                         </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
@@ -123,7 +124,14 @@ const BacktestPanel = () => {
                                             <TableCell align="right">{s.trades}</TableCell>
                                             <TableCell align="right">{s.winRate ?? "-"}</TableCell>
                                             <TableCell align="right" sx={{ color: pnlColor(s.avgR) }}>{s.avgR ?? "-"}</TableCell>
-                                            <TableCell align="right" sx={{ color: pnlColor(s.netPnl), fontWeight: 700 }}>{rupees(s.netPnl)}</TableCell>
+                                            <TableCell align="right" sx={{ color: pnlColor(s.netPnl), fontWeight: 700 }}>
+                                                {rupees(s.netPnl)}
+                                                {s.returnPct != null && (
+                                                    <Typography component="div" sx={{ fontSize: 11.5, color: "#64748b" }}>
+                                                        {`${s.returnPct > 0 ? "+" : ""}${s.returnPct}%${s.cagrPct != null ? ` · ${s.cagrPct}%/yr` : ""}`}
+                                                    </Typography>
+                                                )}
+                                            </TableCell>
                                             <TableCell align="right">{rupees(s.totalCharges)}</TableCell>
                                             <TableCell align="right">{s.profitFactor ?? "-"}</TableCell>
                                             <TableCell align="right">{rupees(s.maxDrawdown)}</TableCell>
@@ -139,6 +147,8 @@ const BacktestPanel = () => {
                         </TableContainer>
                         <Typography sx={{ fontSize: 12, color: "#64748b", mt: 1 }}>
                             "candidate" = at least 100 trades, profit factor ≥ 1.15, and profit in both halves and every year of the period ({results.period?.splitDay ? `split at ${results.period.splitDay}` : "split by date"}).
+                            Momentum rows: profit in both halves and every year, and more than buy & hold of the same stocks
+                            {results.momentumPeriod ? ` (tested ${results.momentumPeriod}, after a 6-month warm-up)` : ""}; their trades are positions held for weeks.
                             That is the minimum before paper trading a strategy, not a guarantee of future profit.
                         </Typography>
                     </Box>

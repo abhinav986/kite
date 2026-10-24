@@ -986,6 +986,28 @@ const routes = {
     sendJson(res, 200, autoTrader.stop());
   },
 
+  async fnoStocks(req, res) {
+    sendJson(res, 200, await autoTrader.listFnoStocks());
+  },
+
+  async stockHistory(req, res, url) {
+    const token = url.searchParams.get("token");
+    const months = Math.min(12, Math.max(1, Number(url.searchParams.get("months")) || 6));
+    if (!token) {
+      sendJson(res, 400, { error: "token is required" });
+      return;
+    }
+    try {
+      sendJson(res, 200, await autoTrader.backtestStock({ token, months }));
+    } catch (error) {
+      if (error.message === "Not an F&O stock") {
+        sendJson(res, 404, { error: error.message });
+        return;
+      }
+      throw error;
+    }
+  },
+
   async autoTraderSignals(req, res, url) {
     const date = url.searchParams.get("date") || "";
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -1222,6 +1244,8 @@ const router = [
   { method: "POST", pattern: /^\/api\/autotrader\/stop\/?$/, handler: routes.autoTraderStop },
   { method: "POST", pattern: /^\/api\/autotrader\/mode\/?$/, handler: routes.autoTraderMode },
   { method: "GET", pattern: /^\/api\/autotrader\/signals\/?$/, handler: routes.autoTraderSignals },
+  { method: "GET", pattern: /^\/api\/fno-stocks\/?$/, handler: routes.fnoStocks, public: true },
+  { method: "GET", pattern: /^\/api\/stock-history\/?$/, handler: routes.stockHistory },
   { method: "POST", pattern: /^\/api\/autotrader\/square-off\/?$/, handler: routes.autoTraderSquareOff },
   { method: "GET", pattern: /^\/api\/auth\/login-url\/?$/, handler: routes.loginUrl, public: true },
   { method: "GET", pattern: /^\/api\/auth\/login\/?$/, handler: routes.login, public: true },

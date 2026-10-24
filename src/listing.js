@@ -2,16 +2,20 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import { get } from "./utils/axios";
-import ScannerHome from "./scanner/scannerHome";
-import AnalyticsHome from "./analysis/analysisHome";
+import StockSignalHistory from "./analysis/stockSignalHistory";
 import BacktestPanel from "./backtest/backtestPanel";
 import { stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70, stocks70To75_2 } from "./constants/stock";
 
 const Listing = () => {
     const [data, setData] = useState([]);
-    const [showScanner, setShowScanner] = useState(true);
+    const [fnoStocks, setFnoStocks] = useState([]);
     const [selectedStock, setSelectedStock] = useState(null);
     const [showTesting, setShowTesting] = useState(false);
+
+    // the list shows only F&O stocks: the signal strategy and History Analysis apply to them
+    useEffect(() => {
+        get("fno-stocks").then((res) => setFnoStocks((res.data || []).map((s) => ({ ...s, id: s.token }))));
+    }, []);
 
     useEffect(() => {
         get("instruments").then((res) => {
@@ -64,35 +68,43 @@ const Listing = () => {
 
     const columns = useMemo(() => [
         {
-            field: "instrument_token",
-            headerName: "Token",
-            type: "number",
+            field: "symbol",
+            headerName: "Symbol",
             width: 150,
-        },
-        {
-            field: "name",
-            headerName: "Name",
-            width: 320,
             renderCell: (params) => (
                 <Button
                     variant="text"
                     onClick={() => setSelectedStock({
-                        instrumentToken: params.row.instrument_token,
-                        name: params.row.name,
+                        instrumentToken: params.row.token,
+                        name: params.row.symbol,
                     })}
                     sx={{
                         p: 0,
                         minWidth: 0,
                         justifyContent: "flex-start",
                         textTransform: "none",
-                        fontWeight: 700,
+                        fontWeight: 800,
+                        color: selectedStock?.instrumentToken === params.row.token ? "#0f766e" : undefined,
                     }}
                 >
-                    {params.row.name}
+                    {params.row.symbol}
                 </Button>
             ),
         },
-    ], []);
+        {
+            field: "name",
+            headerName: "Company",
+            flex: 1,
+            minWidth: 180,
+            renderCell: (params) => <span style={{ color: "#475569" }}>{params.value}</span>,
+        },
+        {
+            field: "lotSize",
+            headerName: "Lot",
+            type: "number",
+            width: 80,
+        },
+    ], [selectedStock]);
 
     return (
         <Box
@@ -147,7 +159,7 @@ const Listing = () => {
                                     letterSpacing: "-0.04em",
                                 }}
                             >
-                                Instruments, scanner, and history analysis in one page.
+                                F&O stocks, gap signals and history analysis in one page.
                             </Typography>
                             <Typography
                                 sx={{
@@ -157,7 +169,7 @@ const Listing = () => {
                                     fontSize: "1rem",
                                 }}
                             >
-                                Use the buttons to show or hide the scanner, and click any stock name to open its past engulfe analysis below without leaving the home page.
+                                Click any F&O stock to see every day in the past 6 months when the gap signal strategy triggered, with a chart of that day and the day before.
                             </Typography>
                         </Box>
 
@@ -174,18 +186,6 @@ const Listing = () => {
                                 Controls
                             </Typography>
                             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2 }}>
-                                <Button
-                                    variant="contained"
-                                    onClick={() => setShowScanner((value) => !value)}
-                                    sx={{
-                                        backgroundColor: "#f8fafc",
-                                        color: "#0f3d3e",
-                                        fontWeight: 700,
-                                        "&:hover": { backgroundColor: "#e2e8f0" },
-                                    }}
-                                >
-                                    {showScanner ? "Hide Scanner" : "Show Scanner"}
-                                </Button>
                                 <Button
                                     variant="outlined"
                                     onClick={() => setSelectedStock(null)}
@@ -245,17 +245,17 @@ const Listing = () => {
                             >
                                 <Box>
                                     <Typography sx={{ fontSize: 24, fontWeight: 800, color: "#0f172a" }}>
-                                        All Instruments
+                                        F&O Stocks{fnoStocks.length ? ` (${fnoStocks.length})` : ""}
                                     </Typography>
                                     <Typography sx={{ color: "#64748b" }}>
-                                        Click a stock name to show its past history analysis in this same page.
+                                        Click a symbol to backtest the gap signal strategy on its past 6 months.
                                     </Typography>
                                 </Box>
                             </Stack>
 
                             <Box sx={{ height: 620, width: "100%", minWidth: 0 }}>
                                 <DataGrid
-                                    rows={data}
+                                    rows={fnoStocks}
                                     columns={columns}
                                     disableRowSelectionOnClick
                                     initialState={{
@@ -270,10 +270,10 @@ const Listing = () => {
 
                         <Box sx={{ minWidth: 0 }}>
                             {selectedStock ? (
-                                <AnalyticsHome
+                                <StockSignalHistory
+                                    key={selectedStock.instrumentToken}
                                     instrumentToken={selectedStock.instrumentToken}
                                     stockName={selectedStock.name}
-                                    embedded
                                     onClose={() => setSelectedStock(null)}
                                 />
                             ) : (
@@ -314,19 +314,12 @@ const Listing = () => {
                                         Pick an instrument to analyze.
                                     </Typography>
                                     <Typography sx={{ mt: 1.5, maxWidth: 520, color: "#64748b" }}>
-                                        Click any stock name from the left to load its past 2 months of 5-minute engulfe analysis here.
+                                        Click any F&O stock on the left to run the gap signal strategy on its past 6 months of 5-minute candles. Each signal day opens a chart with the previous day, so you can compare the gap.
                                     </Typography>
                                 </Paper>
                             )}
                         </Box>
                     </Box>
-
-                    {showScanner ? (
-                        <ScannerHome
-                            embedded
-                            onSelectStock={(stock) => setSelectedStock(stock)}
-                        />
-                    ) : null}
                 </Stack>
             </Paper>
         </Box>
