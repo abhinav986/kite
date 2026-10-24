@@ -3,6 +3,7 @@ import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { DataGrid } from "@mui/x-data-grid";
 import { get } from "./utils/axios";
 import StockSignalHistory from "./analysis/stockSignalHistory";
+import KiteConnect from "./kiteConnect";
 import BacktestPanel from "./backtest/backtestPanel";
 import { stocks80To100_2, stocks80To100, stocks75To80, stocks70To75, stocks65To70, stocks70To75_2 } from "./constants/stock";
 
@@ -185,6 +186,9 @@ const Listing = () => {
                             <Typography sx={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.14em", opacity: 0.75 }}>
                                 Controls
                             </Typography>
+                            <Box sx={{ mt: 2 }}>
+                                <KiteConnect />
+                            </Box>
                             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2 }}>
                                 <Button
                                     variant="outlined"
