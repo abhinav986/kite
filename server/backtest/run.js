@@ -1,10 +1,9 @@
 // Backtests the strategy used for the paper-trading signals, on 5-minute candles downloaded by fetchData.js:
-//   gap >= 2% at the open -> fade it when the 2nd candle breaks the 1st candle's low (gap-up, SELL) or high
+//   gap >= 1% at the open -> fade it when the 2nd candle breaks the 1st candle's low (gap-up, SELL) or high
 //   (gap-down, BUY); stop at the 1st candle's other end; held until 15:15. Top 100 most liquid F&O stocks.
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
-// Also tested: the opening range + VWAP breakout with retest (see orbVwapTrade).
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -30,7 +29,7 @@ const RISK_PER_TRADE = Number(getArg("risk", 1000));
 const MAX_NOTIONAL = Number(getArg("maxNotional", 500000));
 const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
-const MIN_GAP_PCT = 2;
+const MIN_GAP_PCT = 1; // same as the paper signals
 const TOP_STOCKS = 100;
 
 // ---------- data ----------
@@ -52,28 +51,22 @@ function loadDays(file) {
     .map(([day, candles]) => ({ day, candles }));
 }
 
-// Nifty 50 % change at the close of the candle at `minute`: from the previous close (niftyChange) and from
-// the day's 9:15 open (niftyFromOpen)
+// % change of Nifty 50 from the previous close to the close of the candle at `minute`
 function loadNifty() {
   const file = path.join(DATA_DIR, "_NIFTY.json");
-  if (!fs.existsSync(file)) return { niftyChange: () => null, niftyFromOpen: () => null };
+  if (!fs.existsSync(file)) return () => null;
   const days = loadDays(file);
   const byDay = new Map();
   days.forEach(({ day, candles }, i) => {
     if (i === 0) return;
     const prevCandles = days[i - 1].candles;
-    byDay.set(day, {
-      prevClose: prevCandles[prevCandles.length - 1].close,
-      open: candles[0].open,
-      closes: new Map(candles.map((c) => [c.minute, c.close])),
-    });
+    byDay.set(day, { prevClose: prevCandles[prevCandles.length - 1].close, closes: new Map(candles.map((c) => [c.minute, c.close])) });
   });
-  const changeFrom = (base) => (day, minute) => {
+  return (day, minute) => {
     const entry = byDay.get(day);
     const close = entry?.closes.get(minute);
-    return close == null ? null : ((close - entry[base]) / entry[base]) * 100;
+    return close == null ? null : ((close - entry.prevClose) / entry.prevClose) * 100;
   };
-  return { niftyChange: changeFrom("prevClose"), niftyFromOpen: changeFrom("open") };
 }
 
 // ---------- costs ----------
@@ -189,148 +182,6 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   };
 }
 
-// ---------- strategy 2: opening range + VWAP breakout with retest ----------
-//
-// LONG (mirror for SHORT):
-//  1. opening range = high/low of 9:15-9:30
-//  2. after 9:30 a candle CLOSES above the range high while above VWAP; its range is at most 2x the day's
-//     average candle range and its volume is above the previous 10 candles' average. With
-//     opts.marketFilter the stock must also be up more than Nifty since the open, and Nifty not down more
-//     than 0.3% from yesterday's close.
-//  3. retest: a later candle dips to within 0.2% of the range high but closes above it (the latest such candle)
-//  4. BUY when a later candle breaks the retest candle's high (or at the open if it opens above)
-// A close back inside the range cancels the breakout (wait for a new one). Stop = retest candle's low; skip
-// if it is more than 1% away. Exit: 2R target; from 1R the stop trails to the previous candle's low;
-// otherwise 15:15. Entries until 13:30. First entry of the day only.
-const ORB_VWAP_LAST_ENTRY_MINUTE = 13 * 60 + 30;
-const RETEST_TOLERANCE = 0.002;
-const MAX_STOP_PCT = 1;
-const NIFTY_SHARP_MOVE_PCT = 0.3;
-
-function orbVwapTrade({ symbol, day, candles, prevCandles, niftyChange, niftyFromOpen }, opts) {
-  const range = candles.slice(0, 3);
-  const rangeHigh = Math.max(...range.map((c) => c.high));
-  const rangeLow = Math.min(...range.map((c) => c.low));
-  const history = [...prevCandles, ...candles];
-  const offset = prevCandles.length;
-
-  // running VWAP and average candle range for today
-  const vwap = [];
-  let pv = 0;
-  let vol = 0;
-  for (const c of candles) {
-    pv += ((c.high + c.low + c.close) / 3) * (c.volume || 0);
-    vol += c.volume || 0;
-    vwap.push(vol ? pv / vol : c.close);
-  }
-  const avgRangeBefore = (k) => candles.slice(0, k).reduce((s, c) => s + (c.high - c.low), 0) / k;
-  const avgVolumeBefore = (k) => {
-    const prev = history.slice(Math.max(0, offset + k - 10), offset + k);
-    return prev.reduce((s, c) => s + (c.volume || 0), 0) / Math.max(1, prev.length);
-  };
-
-  const validBreakout = (k, side) => {
-    const c = candles[k];
-    const long = side === "long";
-    if (!(long ? c.close > rangeHigh && c.close > vwap[k] : c.close < rangeLow && c.close < vwap[k])) return false;
-    if (c.high - c.low > 2 * avgRangeBefore(k)) return false; // oversized breakout candle
-    if (!((c.volume || 0) > avgVolumeBefore(k))) return false;
-    if (opts.marketFilter) {
-      const stockFromOpen = ((c.close - candles[0].open) / candles[0].open) * 100;
-      const nOpen = niftyFromOpen(day, c.minute);
-      const nPrev = niftyChange(day, c.minute);
-      if (nOpen == null || nPrev == null) return false;
-      if (long ? !(stockFromOpen > nOpen) || nPrev < -NIFTY_SHARP_MOVE_PCT : !(stockFromOpen < nOpen) || nPrev > NIFTY_SHARP_MOVE_PCT) return false;
-    }
-    return true;
-  };
-
-  let side = null; // set once a valid breakout happened
-  let retest = null;
-  for (let k = 3; k < candles.length; k += 1) {
-    const c = candles[k];
-    if (c.minute > ORB_VWAP_LAST_ENTRY_MINUTE) return null;
-
-    if (side) {
-      const long = side === "long";
-      const level = long ? rangeHigh : rangeLow;
-      // entry: break of the retest candle's high (SHORT: low)
-      if (retest && (long ? c.high > retest.high : c.low < retest.low)) {
-        const trigger = long ? retest.high : retest.low;
-        const entry = long ? Math.max(trigger, c.open) : Math.min(trigger, c.open);
-        const stop = long ? retest.low : retest.high;
-        if ((Math.abs(entry - stop) / entry) * 100 > MAX_STOP_PCT) return null; // stop too wide: skip the day
-        return trailTrade({ symbol, day, candles, entryIdx: k, side, entry, stop, extra: { retestTime: retest.date.toISOString() } });
-      }
-      // a close back inside the range cancels this breakout
-      if (long ? c.close < level : c.close > level) {
-        side = null;
-        retest = null;
-      } else if (long ? c.low <= level * (1 + RETEST_TOLERANCE) : c.high >= level * (1 - RETEST_TOLERANCE)) {
-        retest = c; // dips to the level and closes beyond it
-      }
-      if (side) continue;
-    }
-    if (validBreakout(k, "long")) side = "long";
-    else if (validBreakout(k, "short")) side = "short";
-  }
-  return null;
-}
-
-// Simulates one position with a fixed 2R target and, from 1R, a stop trailed to the previous candle's low
-// (SHORT: high). The entry candle only checks the stop. Stop/trail/time exits pay slippage; the target is a
-// limit order.
-function trailTrade({ symbol, day, candles, entryIdx, side, entry, stop, extra = {} }) {
-  const long = side === "long";
-  if (long ? entry <= stop : entry >= stop) return null;
-  const riskPerShare = Math.abs(entry - stop);
-  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
-  if (qty < 1) return null;
-  const oneR = long ? entry + riskPerShare : entry - riskPerShare;
-  const target = long ? entry + 2 * riskPerShare : entry - 2 * riskPerShare;
-
-  let currentStop = stop;
-  let trailing = false;
-  let result = null;
-  for (let k = entryIdx; k < candles.length && !result; k += 1) {
-    const c = candles[k];
-    const entryBar = k === entryIdx;
-    const stopReason = trailing ? "trail" : "stop";
-    if (!entryBar && (long ? c.open <= currentStop : c.open >= currentStop)) result = { exit: c.open, reason: stopReason };
-    else if (long ? c.low <= currentStop : c.high >= currentStop) result = { exit: currentStop, reason: stopReason };
-    else if (!entryBar && (long ? c.open >= target : c.open <= target)) result = { exit: c.open, reason: "target", limit: true };
-    else if (!entryBar && (long ? c.high >= target : c.low <= target)) result = { exit: target, reason: "target", limit: true };
-    else if (c.minute >= SQUARE_OFF_MINUTE) result = { exit: c.close, reason: "time" };
-    else {
-      if (long ? c.high >= oneR : c.low <= oneR) trailing = true;
-      if (trailing) currentStop = long ? Math.max(currentStop, c.low) : Math.min(currentStop, c.high);
-    }
-  }
-  if (!result) result = { exit: candles[candles.length - 1].close, reason: "time" };
-
-  const fillEntry = slip(entry, side, true);
-  const fillExit = result.limit ? result.exit : slip(result.exit, side, false);
-  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
-  const cost = charges(side, qty, fillEntry, fillExit);
-  return {
-    symbol,
-    day,
-    time: candles[entryIdx].date.toISOString(),
-    side,
-    ...extra,
-    qty,
-    entry: +fillEntry.toFixed(2),
-    stop: +stop.toFixed(2),
-    target: +target.toFixed(2),
-    exit: +fillExit.toFixed(2),
-    reason: result.reason,
-    gross: +gross.toFixed(2),
-    cost: +cost.toFixed(2),
-    net: +(gross - cost).toFixed(2),
-    r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
-  };
-}
-
 // ---------- metrics ----------
 
 let SPLIT_DAY = null;
@@ -398,26 +249,22 @@ function main() {
     .filter((f) => !wanted || wanted.has(f.replace(/\.json$/, "")));
 
   const variants = [
-    { name: "Gap >= 2% fade, NO Nifty check (paper signals)", niftyMax: null },
-    { name: "Gap >= 2% fade, Nifty check 0.4%", niftyMax: 0.4 },
-    { name: "Gap >= 2% fade, Nifty check 0.2%", niftyMax: 0.2 },
+    { name: "Gap >= 1% fade, NO Nifty check (paper signals)", niftyMax: null },
+    { name: "Gap >= 1% fade, Nifty check 0.4%", niftyMax: 0.4 },
+    { name: "Gap >= 1% fade, Nifty check 0.2%", niftyMax: 0.2 },
     // break by any of the next 3 candles (9:20, 9:25, 9:30) instead of only 9:20
-    { name: "Gap >= 2% fade, break within 3 candles, NO Nifty check", niftyMax: null, breakCandles: 3 },
-    { name: "Gap >= 2% fade, break within 3 candles, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3 },
-    { name: "Gap >= 2% fade, break within 3 candles, Nifty check 0.2%", niftyMax: 0.2, breakCandles: 3 },
+    { name: "Gap >= 1% fade, break within 3 candles, NO Nifty check", niftyMax: null, breakCandles: 3 },
+    { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3 },
+    { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.2%", niftyMax: 0.2, breakCandles: 3 },
     // Test 1: only big gaps
     { name: "TEST 1: Gap >= 4% fade, Nifty check 0.4%", minGap: 4, niftyMax: 0.4 },
     { name: "TEST 1: Gap >= 4% fade, NO Nifty check (reference)", minGap: 4, niftyMax: null },
     // Test 3: skip when yesterday already moved >= 3% the same way as today's gap
-    { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
-    { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
+    { name: "TEST 3: Gap >= 1% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
+    { name: "TEST 3: Gap >= 1% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
-  const orbVwapVariants = [
-    { name: "ORB + VWAP: 15-min range close-breakout, above VWAP, relative strength, retest, 2R + trail", marketFilter: true },
-    { name: "ORB + VWAP: same rules, NO relative-strength / Nifty filter", marketFilter: false },
-  ];
-  const trades = Object.fromEntries([...variants, ...orbVwapVariants].map((v) => [v.name, []]));
-  const { niftyChange, niftyFromOpen } = loadNifty();
+  const trades = Object.fromEntries(variants.map((v) => [v.name, []]));
+  const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
 
@@ -433,11 +280,7 @@ function main() {
       // yesterday's % change (yesterday's close vs the day before), for test 3
       const twoDaysAgo = days[d - 2]?.candles;
       const prevDayChange = twoDaysAgo ? ((prevClose - twoDaysAgo[twoDaysAgo.length - 1].close) / twoDaysAgo[twoDaysAgo.length - 1].close) * 100 : null;
-      const ctx = { symbol, day, candles, prevCandles, prevClose, prevDayChange, niftyChange, niftyFromOpen };
-      for (const v of orbVwapVariants) {
-        const t = orbVwapTrade(ctx, v);
-        if (t) trades[v.name].push(t);
-      }
+      const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
         if (t) trades[v.name].push(t);

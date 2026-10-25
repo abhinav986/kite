@@ -58,7 +58,7 @@ const BacktestPanel = () => {
                     <Box>
                         <Typography variant="h6" sx={{ fontWeight: 800 }}>Strategy Backtest (5-min candles)</Typography>
                         <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            The paper-signal strategy (gap ≥ 2% fade) on the 100 most liquid F&O stocks, with and without the Nifty check, 2 years, after Zerodha charges and slippage.                        </Typography>
+                            The paper-signal strategy (gap ≥ 1% fade) on the 100 most liquid F&O stocks, with and without the Nifty check, 2 years, after Zerodha charges and slippage.                        </Typography>
                     </Box>
                     <Stack direction="row" spacing={1}>
                         <Button variant="contained" disabled={backtest?.running} onClick={() => call("backtest/run", { years: 2 })}>

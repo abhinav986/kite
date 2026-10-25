@@ -1,7 +1,7 @@
 // Intraday auto-trader for NSE F&O stocks (cash segment, MIS).
 //
-// Default method (the only backtest candidate, see server/backtest/run.js "NEW gap>=2% fade ... Nifty filter"):
-//  - gap-up SELL:   stock opens >= 2% above yesterday's close and the 2nd 5-min candle breaks the 1st candle's low.
+// Default method: the gap fade (see server/backtest/run.js "Gap >= 1% fade"):
+//  - gap-up SELL:   stock opens >= 1% above yesterday's close and a 5-min candle in the break window breaks the 1st candle's low.
 //                   Stop = 1st candle's high. (Optional AUTOTRADE_NIFTY_FILTER=true: skip when Nifty is up > 0.4%.)
 //  - gap-down BUY:  mirror image. Stop = 1st candle's low.
 //  Held until the stop or AUTOTRADE_SQUARE_OFF (default 15:15).
@@ -56,8 +56,8 @@ function readSettings() {
   const slots = envNumber("AUTOTRADE_SLOTS", 3);
   return {
     mode: readSavedMode(),
-    // Defaults = the only backtest candidate: gap >= 2% fade, Nifty filter, stop at the 1st candle's
-    // other extreme, held to 15:15 (PF ~2.6, profitable in both halves of Oct 2024 - Oct 2026).
+    // Defaults: gap >= 1% fade, stop at the 1st candle's other extreme, held to 15:15
+    // (backtested in server/backtest/run.js, rows "Gap >= 1% fade").
     strategies: (process.env.AUTOTRADE_STRATEGIES || "orb").split(",").map((s) => s.trim()).filter(Boolean),
     symbols: (process.env.AUTOTRADE_SYMBOLS || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
     universeSize: envNumber("AUTOTRADE_UNIVERSE_SIZE", 0), // 0 = all F&O stocks; N = top N of the backtest list
@@ -71,7 +71,7 @@ function readSettings() {
     niftyMaxAgainstPct: envNumber("AUTOTRADE_NIFTY_MAX_AGAINST_PCT", 0.4),
     maxTradesPerDay: envNumber("AUTOTRADE_MAX_TRADES_PER_DAY", slots),
     maxDailyLoss: envNumber("AUTOTRADE_MAX_DAILY_LOSS", 0), // 0 = off
-    orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 2),
+    orbMinGapPct: envNumber("AUTOTRADE_ORB_MIN_GAP_PCT", 1),
     orbMaxGapPct: envNumber("AUTOTRADE_ORB_MAX_GAP_PCT", 100),
     orbEntry: process.env.AUTOTRADE_ORB_ENTRY === "close" ? "close" : "break",
     // the break may come on any of the first N candles after 9:15 (3 = 9:20, 9:25 or 9:30, valid until 9:35)
