@@ -4,6 +4,7 @@
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
+// Also tested: the gap fade with pullback confirmation (see gapPullbackTrade).
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -182,6 +183,95 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   };
 }
 
+// ---------- strategy 2: gap fade with pullback confirmation ----------
+//
+// Gap-up -> SELL (mirror for gap-down -> BUY):
+//  1. gap >= MIN_GAP_PCT at the open
+//  2. any later candle crosses the 1st candle's low (not the entry)
+//  3. a pullback candle: higher high than the candle before it
+//  4. a candle breaks the day's low (lowest price so far) -> SELL at that low (or the open if it opens below)
+// Trading above the 1st candle's high before the entry cancels the setup. opts.stopAt: "first" = the 1st
+// candle's high, "pullback" = the highest high between the break and the entry. With opts.niftyMax, Nifty
+// must not be more than that % with the gap at the entry candle. Exit at the stop or 15:15; entries until 14:30.
+const PULLBACK_LAST_ENTRY_MINUTE = 14 * 60 + 30;
+
+function gapPullbackTrade({ symbol, day, candles, prevClose, niftyChange }, opts) {
+  const c1 = candles[0];
+  const gapPct = ((c1.open - prevClose) / prevClose) * 100;
+  if (Math.abs(gapPct) < MIN_GAP_PCT) return null;
+  const side = gapPct > 0 ? "short" : "long";
+  const short = side === "short";
+  const firstStop = short ? c1.high : c1.low;
+  const beyond = (a, b) => (short ? a < b : a > b); // in the trade's direction
+
+  let dayExtreme = short ? c1.low : c1.high; // day's low (SELL) / high (BUY) so far
+  let broke = false;
+  let pulledBack = false;
+  let pullbackExtreme = null; // highest high (SELL) / lowest low (BUY) since the break
+  for (let k = 1; k < candles.length; k += 1) {
+    const c = candles[k];
+    const prev = candles[k - 1];
+    if (c.minute > PULLBACK_LAST_ENTRY_MINUTE) return null;
+    const towards = short ? c.low : c.high; // the side the trade goes
+    const against = short ? c.high : c.low; // the stop side
+
+    if (pulledBack && beyond(towards, dayExtreme)) {
+      const entry = short ? Math.min(dayExtreme, c.open) : Math.max(dayExtreme, c.open);
+      const stop = opts.stopAt === "pullback" ? pullbackExtreme : firstStop;
+      let nifty = null;
+      if (opts.niftyMax != null) {
+        nifty = niftyChange(day, c.minute);
+        const withGap = nifty == null ? null : short ? nifty : -nifty;
+        if (withGap == null || withGap > opts.niftyMax) return null;
+      }
+      return sizeAndSimulate({ symbol, day, candles, entryIdx: k, side, entry, stop, extra: { gapPct: +gapPct.toFixed(2), nifty: nifty == null ? null : +nifty.toFixed(2) } });
+    }
+    if (short ? against > firstStop : against < firstStop) return null; // traded through the 1st candle's other end
+
+    if (!broke) {
+      if (beyond(towards, short ? c1.low : c1.high)) {
+        broke = true;
+        pullbackExtreme = against;
+      }
+    } else {
+      pullbackExtreme = short ? Math.max(pullbackExtreme, c.high) : Math.min(pullbackExtreme, c.low);
+      if (!pulledBack && (short ? c.high > prev.high : c.low < prev.low)) pulledBack = true;
+    }
+    dayExtreme = short ? Math.min(dayExtreme, c.low) : Math.max(dayExtreme, c.high);
+  }
+  return null;
+}
+
+// Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
+function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, extra = {} }) {
+  const long = side === "long";
+  if (stop == null || (long ? entry <= stop : entry >= stop)) return null;
+  const riskPerShare = Math.abs(entry - stop);
+  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
+  if (qty < 1) return null;
+  const result = simulate({ candles, entryIdx, side, stop });
+  const fillEntry = slip(entry, side, true);
+  const fillExit = slip(result.exit, side, false);
+  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
+  const cost = charges(side, qty, fillEntry, fillExit);
+  return {
+    symbol,
+    day,
+    time: candles[entryIdx].date.toISOString(),
+    side,
+    ...extra,
+    qty,
+    entry: +fillEntry.toFixed(2),
+    stop: +stop.toFixed(2),
+    exit: +fillExit.toFixed(2),
+    reason: result.reason,
+    gross: +gross.toFixed(2),
+    cost: +cost.toFixed(2),
+    net: +(gross - cost).toFixed(2),
+    r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
+  };
+}
+
 // ---------- metrics ----------
 
 let SPLIT_DAY = null;
@@ -263,7 +353,13 @@ function main() {
     { name: "TEST 3: Gap >= 1% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
     { name: "TEST 3: Gap >= 1% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
-  const trades = Object.fromEntries(variants.map((v) => [v.name, []]));
+  const pullbackVariants = [
+    { name: "PULLBACK: Gap >= 1%, break of 1st candle, pullback, break of day low/high, stop 1st candle, NO Nifty check", stopAt: "first", niftyMax: null },
+    { name: "PULLBACK: same, stop at pullback high/low, NO Nifty check", stopAt: "pullback", niftyMax: null },
+    { name: "PULLBACK: same, stop 1st candle, Nifty check 0.4%", stopAt: "first", niftyMax: 0.4 },
+    { name: "PULLBACK: same, stop at pullback high/low, Nifty check 0.4%", stopAt: "pullback", niftyMax: 0.4 },
+  ];
+  const trades = Object.fromEntries([...variants, ...pullbackVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -283,6 +379,10 @@ function main() {
       const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
+        if (t) trades[v.name].push(t);
+      }
+      for (const v of pullbackVariants) {
+        const t = gapPullbackTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
