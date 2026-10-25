@@ -4,7 +4,8 @@
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
-// Also tested: the shakeout-and-reclaim pattern at any time of day (see shakeoutTrade).
+// Candle-pattern tests: CANDLE 1/2 filter the gap fade by the 9:15 candle; CANDLE 3 is a shooting star /
+// hammer at yesterday's high / low (see keyLevelRejectionTrade).
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -32,7 +33,6 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
-const SHAKEOUT_DEADLINE_MINUTE = 14 * 60; // the shakeout setup must complete (entry) before 14:00
 
 // ---------- data ----------
 
@@ -113,7 +113,11 @@ function simulate({ candles, entryIdx, side, stop }) {
 //                       A candle that crosses the other side of the 1st candle first cancels the setup.
 // opts.niftyMax:        skip when Nifty moves with the gap by more than this % (null = no check)
 // opts.skipPrevMovePct: skip when the stock already moved this much yesterday in the gap's direction
-function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyChange }, opts) {
+// opts.rejectionCandle: the 9:15 candle must show rejection: gap-up -> closes red or upper wick >= half its
+//                       range (gap-down: closes green or lower wick >= half its range)
+// opts.intoPrevRange:   the 9:15 candle must trade back into yesterday's range: gap-up -> its low reaches
+//                       yesterday's high (gap-down: its high reaches yesterday's low)
+function gapFadeTrade({ symbol, day, candles, prevClose, prevHigh, prevLow, prevDayChange, niftyChange }, opts) {
   const c1 = candles[0];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
   if (Math.abs(gapPct) < (opts.minGap ?? MIN_GAP_PCT)) return null;
@@ -127,6 +131,14 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
     const prevWithGap = short ? prevDayChange : -prevDayChange;
     if (prevWithGap >= opts.skipPrevMovePct) return null;
   }
+
+  if (opts.rejectionCandle) {
+    const range = c1.high - c1.low;
+    const wick = short ? c1.high - Math.max(c1.open, c1.close) : Math.min(c1.open, c1.close) - c1.low;
+    const closesAgainstGap = short ? c1.close < c1.open : c1.close > c1.open;
+    if (!(closesAgainstGap || (range > 0 && wick >= range / 2))) return null;
+  }
+  if (opts.intoPrevRange && !(short ? c1.low <= prevHigh : c1.high >= prevLow)) return null;
 
   const level = short ? c1.low : c1.high;
   const stop = short ? c1.high : c1.low;
@@ -183,89 +195,47 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
   };
 }
 
-// ---------- strategy 2: shakeout and reclaim (any time of day) ----------
+// ---------- strategy 2: shooting star / hammer at yesterday's high / low ----------
 //
-// BUY (mirror for SELL), starting from ANY candle "1" during the day:
-//  2. the next candle trades above 1's high AND closes above it
-//  3. the next candle trades above 2's high
-//  4. shakeout: a later candle closes below 1's low
-//  5. a candle closes above the setup high (highest high since candle 1)
-//  6. the very next candle trades above 5's high (if it doesn't, wait for another close above the setup high)
-//  7. a pullback candle (lower low than the candle before it)
-//  8. a candle breaks the highest price of the setup -> BUY at that price (or the open if it opens above)
-// The setup must complete before 14:00. Stop = lowest low between candle 3 and the entry. With
-// opts.niftyMax, Nifty must not be more than that % against the trade at the entry candle. Exit at the stop
-// or 15:15. If several setups form in a day, the first entry is taken.
-function shakeoutTrade({ symbol, day, candles, niftyChange }, opts) {
-  let best = null;
-  for (const side of ["long", "short"]) {
-    for (let i = 0; i + 3 < candles.length; i += 1) {
-      const entry = findShakeoutEntry(candles, i, side);
-      if (entry && (!best || entry.idx < best.idx)) best = { ...entry, side, startIdx: i };
-    }
-  }
-  if (!best) return null;
+// SELL: a candle (up to 13:00) trades above yesterday's high but closes back below it, with an upper wick of
+// at least 60% of its range and a body of at most 30% (shooting star). SELL when one of the next 3 candles
+// breaks its low; stop = its high; exit 15:15. If a candle trades above its high first, that signal is
+// dropped. BUY: the mirror (hammer at yesterday's low). With opts.niftyMax, Nifty must not be more than that %
+// against the trade at the entry candle. First entry of the day only.
+const KEY_LEVEL_LAST_SIGNAL_MINUTE = 13 * 60;
+const KEY_LEVEL_BREAK_CANDLES = 3;
 
-  let nifty = null;
-  if (opts.niftyMax != null) {
-    nifty = niftyChange(day, candles[best.idx].minute);
-    const against = nifty == null ? null : best.side === "long" ? -nifty : nifty;
-    if (against == null || against > opts.niftyMax) return null;
-  }
-  return sizeAndSimulate({
-    symbol,
-    day,
-    candles,
-    entryIdx: best.idx,
-    side: best.side,
-    entry: best.price,
-    stop: best.stop,
-    extra: { setupStart: candles[best.startIdx].date.toISOString(), nifty: nifty == null ? null : +nifty.toFixed(2) },
-  });
-}
-
-// Runs one setup starting at candle i; returns { idx, price, stop } of the entry, or null.
-function findShakeoutEntry(candles, i, side) {
-  const long = side === "long";
-  const beyond = (a, b) => (long ? a > b : a < b); // "above" for BUY, "below" for SELL
-  const top = (c) => (long ? c.high : c.low); // the side the trade goes
-  const bottom = (c) => (long ? c.low : c.high); // the shakeout side
-  const [c1, c2, c3] = [candles[i], candles[i + 1], candles[i + 2]];
-  if (!(beyond(top(c2), top(c1)) && beyond(c2.close, top(c1)))) return null; // step 2
-  if (!beyond(top(c3), top(c2))) return null; // step 3
-
-  let setupHigh = long ? Math.max(c1.high, c2.high, c3.high) : Math.min(c1.low, c2.low, c3.low);
-  let stop = null;
-  let shakenOut = false;
-  let reclaimIdx = null; // candle 5, waiting for the next candle to cross its high
-  let followedThrough = false; // step 6 done, waiting for a pullback
-  let pulledBack = false; // step 7 done, waiting for a break of the setup high
-  for (let k = i + 3; k < candles.length; k += 1) {
+function keyLevelRejectionTrade({ symbol, day, candles, prevHigh, prevLow, niftyChange }, opts) {
+  for (let k = 0; k + 1 < candles.length; k += 1) {
     const c = candles[k];
-    const prev = candles[k - 1];
-    if (c.minute >= SHAKEOUT_DEADLINE_MINUTE) return null; // the setup must complete before 14:00
+    if (c.minute > KEY_LEVEL_LAST_SIGNAL_MINUTE) return null;
+    const range = c.high - c.low;
+    if (!(range > 0)) continue;
+    const body = Math.abs(c.close - c.open);
+    const upperWick = c.high - Math.max(c.open, c.close);
+    const lowerWick = Math.min(c.open, c.close) - c.low;
+    let side = null;
+    if (c.high > prevHigh && c.close < prevHigh && upperWick >= 0.6 * range && body <= 0.3 * range) side = "short";
+    else if (c.low < prevLow && c.close > prevLow && lowerWick >= 0.6 * range && body <= 0.3 * range) side = "long";
+    if (!side) continue;
 
-    if (pulledBack && beyond(top(c), setupHigh)) {
-      // step 8: breaks the highest price of the setup -> enter at that price (or the open if beyond it)
-      const price = long ? Math.max(setupHigh, c.open) : Math.min(setupHigh, c.open);
-      return { idx: k, price, stop };
-    }
-    if (followedThrough && !pulledBack && beyond(bottom(prev), bottom(c))) {
-      pulledBack = true; // step 7: lower low than the candle before (SELL: higher high)
-    } else if (reclaimIdx != null) {
-      if (beyond(top(c), top(candles[reclaimIdx]))) {
-        followedThrough = true; // step 6: the next candle crosses candle 5's high
+    const long = side === "long";
+    const level = long ? c.high : c.low; // break of the pattern candle
+    const stop = long ? c.low : c.high;
+    for (let j = k + 1; j <= k + KEY_LEVEL_BREAK_CANDLES && j < candles.length; j += 1) {
+      const b = candles[j];
+      if (long ? b.high > level : b.low < level) {
+        let nifty = null;
+        if (opts.niftyMax != null) {
+          nifty = niftyChange(day, b.minute);
+          const against = nifty == null ? null : long ? -nifty : nifty;
+          if (against == null || against > opts.niftyMax) break;
+        }
+        const entry = long ? Math.max(level, b.open) : Math.min(level, b.open);
+        return sizeAndSimulate({ symbol, day, candles, entryIdx: j, side, entry, stop, extra: { patternTime: c.date.toISOString(), nifty: nifty == null ? null : +nifty.toFixed(2) } });
       }
-      reclaimIdx = null;
+      if (long ? b.low < stop : b.high > stop) break; // stop side traded first: drop this signal
     }
-
-    stop = stop == null || beyond(stop, bottom(c)) ? bottom(c) : stop;
-    if (!shakenOut) {
-      if (beyond(bottom(c1), c.close)) shakenOut = true; // step 4: closes beyond candle 1's low
-    } else if (!followedThrough && reclaimIdx == null && beyond(c.close, setupHigh)) {
-      reclaimIdx = k; // step 5 (again, if an earlier step 6 didn't follow through)
-    }
-    setupHigh = long ? Math.max(setupHigh, c.high) : Math.min(setupHigh, c.low);
   }
   return null;
 }
@@ -273,7 +243,7 @@ function findShakeoutEntry(candles, i, side) {
 // Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
 function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, extra = {} }) {
   const long = side === "long";
-  if (stop == null || (long ? entry <= stop : entry >= stop)) return null;
+  if (long ? entry <= stop : entry >= stop) return null;
   const riskPerShare = Math.abs(entry - stop);
   const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
   if (qty < 1) return null;
@@ -380,12 +350,17 @@ function main() {
     // Test 3: skip when yesterday already moved >= 3% the same way as today's gap
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
+    // Candle-pattern filters on the gap fade
+    { name: "CANDLE 1: Gap fade + rejection 9:15 candle, NO Nifty check", rejectionCandle: true, niftyMax: null },
+    { name: "CANDLE 1: Gap fade + rejection 9:15 candle, Nifty check 0.4%", rejectionCandle: true, niftyMax: 0.4 },
+    { name: "CANDLE 2: Gap fade + 9:15 candle back into yesterday's range, NO Nifty check", intoPrevRange: true, niftyMax: null },
+    { name: "CANDLE 2: Gap fade + 9:15 candle back into yesterday's range, Nifty check 0.4%", intoPrevRange: true, niftyMax: 0.4 },
   ];
-  const shakeoutVariants = [
-    { name: "SHAKEOUT: up-move, shakeout, reclaim, follow-through, pullback, break of setup high (before 14:00), Nifty check 0.2%", niftyMax: 0.2 },
-    { name: "SHAKEOUT: same setup, NO Nifty check", niftyMax: null },
+  const keyLevelVariants = [
+    { name: "CANDLE 3: shooting star / hammer at yesterday's high / low, NO Nifty check", niftyMax: null },
+    { name: "CANDLE 3: shooting star / hammer at yesterday's high / low, Nifty check 0.2%", niftyMax: 0.2 },
   ];
-  const trades = Object.fromEntries([...variants, ...shakeoutVariants].map((v) => [v.name, []]));
+  const trades = Object.fromEntries([...variants, ...keyLevelVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -402,13 +377,15 @@ function main() {
       // yesterday's % change (yesterday's close vs the day before), for test 3
       const twoDaysAgo = days[d - 2]?.candles;
       const prevDayChange = twoDaysAgo ? ((prevClose - twoDaysAgo[twoDaysAgo.length - 1].close) / twoDaysAgo[twoDaysAgo.length - 1].close) * 100 : null;
-      const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
+      const prevHigh = Math.max(...prevCandles.map((c) => c.high));
+      const prevLow = Math.min(...prevCandles.map((c) => c.low));
+      const ctx = { symbol, day, candles, prevClose, prevHigh, prevLow, prevDayChange, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
-      for (const v of shakeoutVariants) {
-        const t = shakeoutTrade(ctx, v);
+      for (const v of keyLevelVariants) {
+        const t = keyLevelRejectionTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
