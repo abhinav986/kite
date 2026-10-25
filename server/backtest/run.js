@@ -32,7 +32,7 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
-const LAST_ENTRY_MINUTE = 14 * 60 + 30; // no new entries after 14:30, same as the signals
+const SHAKEOUT_DEADLINE_MINUTE = 14 * 60; // the shakeout setup must complete (entry) before 14:00
 
 // ---------- data ----------
 
@@ -190,11 +190,12 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
 //  3. the next candle trades above 2's high
 //  4. shakeout: a later candle closes below 1's low
 //  5. a candle closes above the setup high (highest high since candle 1)
-//  6. the very next candle trades above 5's high -> BUY at 5's high (or the open if it opens above);
-//     if it doesn't, wait for another close above the setup high
-// Stop = lowest low between candle 3 and the entry. With opts.niftyMax, Nifty must not be more than that %
-// against the trade at the entry candle. Exit at the stop or 15:15; entries until 14:30. If several setups
-// form in a day, the first entry is taken.
+//  6. the very next candle trades above 5's high (if it doesn't, wait for another close above the setup high)
+//  7. a pullback candle (lower low than the candle before it)
+//  8. a candle breaks the highest price of the setup -> BUY at that price (or the open if it opens above)
+// The setup must complete before 14:00. Stop = lowest low between candle 3 and the entry. With
+// opts.niftyMax, Nifty must not be more than that % against the trade at the entry candle. Exit at the stop
+// or 15:15. If several setups form in a day, the first entry is taken.
 function shakeoutTrade({ symbol, day, candles, niftyChange }, opts) {
   let best = null;
   for (const side of ["long", "short"]) {
@@ -236,23 +237,33 @@ function findShakeoutEntry(candles, i, side) {
   let setupHigh = long ? Math.max(c1.high, c2.high, c3.high) : Math.min(c1.low, c2.low, c3.low);
   let stop = null;
   let shakenOut = false;
-  let reclaimIdx = null; // candle 5
+  let reclaimIdx = null; // candle 5, waiting for the next candle to cross its high
+  let followedThrough = false; // step 6 done, waiting for a pullback
+  let pulledBack = false; // step 7 done, waiting for a break of the setup high
   for (let k = i + 3; k < candles.length; k += 1) {
     const c = candles[k];
-    if (c.minute > LAST_ENTRY_MINUTE) return null;
-    if (reclaimIdx != null) {
-      const level = top(candles[reclaimIdx]);
-      if (beyond(top(c), level)) {
-        const price = long ? Math.max(level, c.open) : Math.min(level, c.open);
-        return { idx: k, price, stop };
-      }
-      reclaimIdx = null; // the next candle didn't follow through: wait for another close beyond
+    const prev = candles[k - 1];
+    if (c.minute >= SHAKEOUT_DEADLINE_MINUTE) return null; // the setup must complete before 14:00
+
+    if (pulledBack && beyond(top(c), setupHigh)) {
+      // step 8: breaks the highest price of the setup -> enter at that price (or the open if beyond it)
+      const price = long ? Math.max(setupHigh, c.open) : Math.min(setupHigh, c.open);
+      return { idx: k, price, stop };
     }
+    if (followedThrough && !pulledBack && beyond(bottom(prev), bottom(c))) {
+      pulledBack = true; // step 7: lower low than the candle before (SELL: higher high)
+    } else if (reclaimIdx != null) {
+      if (beyond(top(c), top(candles[reclaimIdx]))) {
+        followedThrough = true; // step 6: the next candle crosses candle 5's high
+      }
+      reclaimIdx = null;
+    }
+
     stop = stop == null || beyond(stop, bottom(c)) ? bottom(c) : stop;
     if (!shakenOut) {
-      if (beyond(bottom(c1), c.close)) shakenOut = true; // step 4: closes beyond the 1st candle's low
-    } else if (beyond(c.close, setupHigh)) {
-      reclaimIdx = k; // step 5
+      if (beyond(bottom(c1), c.close)) shakenOut = true; // step 4: closes beyond candle 1's low
+    } else if (!followedThrough && reclaimIdx == null && beyond(c.close, setupHigh)) {
+      reclaimIdx = k; // step 5 (again, if an earlier step 6 didn't follow through)
     }
     setupHigh = long ? Math.max(setupHigh, c.high) : Math.min(setupHigh, c.low);
   }
@@ -371,7 +382,7 @@ function main() {
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
   const shakeoutVariants = [
-    { name: "SHAKEOUT: up-move, close below its 1st candle low, close above setup high, next candle breaks it, Nifty check 0.2%", niftyMax: 0.2 },
+    { name: "SHAKEOUT: up-move, shakeout, reclaim, follow-through, pullback, break of setup high (before 14:00), Nifty check 0.2%", niftyMax: 0.2 },
     { name: "SHAKEOUT: same setup, NO Nifty check", niftyMax: null },
   ];
   const trades = Object.fromEntries([...variants, ...shakeoutVariants].map((v) => [v.name, []]));
