@@ -3,7 +3,9 @@
 //   (gap-down, BUY); stop at the 1st candle's other end; held until 15:15. Top 100 most liquid F&O stocks.
 // It is run with and without the Nifty filter (fade only when Nifty is not moving with the gap by more than
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
-// (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).// Results go to server/backtest/results.json.
+// (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
+// Also tested: the break / pullback / close-above-day-high continuation (see continuationTrade).
+// Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
 //
@@ -30,6 +32,8 @@ const SLIPPAGE = Number(getArg("slippage", 0.02)) / 100;
 const SQUARE_OFF_MINUTE = 15 * 60 + 10; // exit at close of the 15:10 candle = 15:15, same as the signals
 const MIN_GAP_PCT = 2;
 const TOP_STOCKS = 100;
+const LAST_ENTRY_MINUTE = 14 * 60 + 30; // no new entries after 14:30, same as the signals
+const CONTINUATION_LIMIT_PCT = 2.5; // continuation entry must be within this % of yesterday's close
 
 // ---------- data ----------
 
@@ -92,11 +96,12 @@ function slip(price, side, isEntry) {
 // ---------- trade simulation ----------
 
 // Walks candles from entryIdx managing one position; the entry candle only checks the stop.
-function simulate({ candles, entryIdx, side, stop }) {
+// entryAtClose: the position was opened at entryIdx's close, so management starts on the next candle.
+function simulate({ candles, entryIdx, side, stop, entryAtClose = false }) {
   const long = side === "long";
-  for (let k = entryIdx; k < candles.length; k += 1) {
+  for (let k = entryAtClose ? entryIdx + 1 : entryIdx; k < candles.length; k += 1) {
     const c = candles[k];
-    if (k !== entryIdx && (long ? c.open <= stop : c.open >= stop)) return { exit: c.open, reason: "stop" };
+    if ((entryAtClose || k !== entryIdx) && (long ? c.open <= stop : c.open >= stop)) return { exit: c.open, reason: "stop" };
     if (long ? c.low <= stop : c.high >= stop) return { exit: stop, reason: "stop" };
     if (c.minute >= SQUARE_OFF_MINUTE) return { exit: c.close, reason: "time" };
   }
@@ -168,6 +173,119 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
     gapPct: +gapPct.toFixed(2),
     nifty: nifty == null ? null : +nifty.toFixed(2),
     prevDayChange: prevDayChange == null ? null : +prevDayChange.toFixed(2),
+    qty,
+    entry: +fillEntry.toFixed(2),
+    stop: +stop.toFixed(2),
+    exit: +fillExit.toFixed(2),
+    reason: result.reason,
+    gross: +gross.toFixed(2),
+    cost: +cost.toFixed(2),
+    net: +(gross - cost).toFixed(2),
+    r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
+  };
+}
+
+// ---------- strategy 2: break -> pullback -> new-high close -> 2 higher highs -> close above day high ----------
+//
+// BUY (mirror for SELL):
+//  1. the 9:15 candle is green           2. the 9:20 candle trades above its high
+//  3. a pullback candle (lower low than the candle before it; the deepest low until step 4 is the stop)
+//  4. a candle closes above the day's high so far
+//  5-6. the next 2 candles each make a higher high (if not, wait for another step-4 close)
+//  7. the first later candle that closes above the day's high -> BUY at that close
+// The entry must be less than CONTINUATION_LIMIT_PCT above yesterday's close (SELL: below), and with
+// opts.niftyMax, Nifty must not be more than that % against the trade at the entry candle. Exit at the stop
+// or 15:15; entries until 14:30.
+function continuationTrade({ symbol, day, candles, prevClose, niftyChange }, opts) {
+  const [c1, c2] = candles;
+  let side = null;
+  if (c1.close > c1.open && c2.high > c1.high) side = "long";
+  else if (c1.close < c1.open && c2.low < c1.low) side = "short";
+  if (!side) return null;
+  const long = side === "long";
+  const beyond = (a, b) => (long ? a > b : a < b); // "above" for BUY, "below" for SELL
+  const extremeOf = (c) => (long ? c.high : c.low); // day high for BUY, day low for SELL
+  const againstOf = (c) => (long ? c.low : c.high); // pullback side
+
+  let dayExtreme = long ? Math.max(c1.high, c2.high) : Math.min(c1.low, c2.low);
+  let stop = null; // deepest pullback point, set once a pullback starts
+  let step = 3; // next step we are waiting for
+  let newHighIdx = null;
+
+  for (let k = 2; k < candles.length; k += 1) {
+    const c = candles[k];
+    const prev = candles[k - 1];
+    if (c.minute > LAST_ENTRY_MINUTE) return null;
+
+    if (step === 3) {
+      if (beyond(againstOf(prev), againstOf(c))) {
+        stop = againstOf(c);
+        step = 4;
+      }
+    } else if (step === 4) {
+      if (beyond(c.close, dayExtreme)) {
+        newHighIdx = k;
+        step = 5;
+      } else if (beyond(stop, againstOf(c))) {
+        stop = againstOf(c); // pullback went deeper
+      }
+    } else if (step === 5 || step === 6) {
+      if (beyond(extremeOf(c), extremeOf(prev))) {
+        step += 1; // 5 -> 6 -> 7
+      } else {
+        step = 4; // the two higher highs didn't come: wait for another close beyond the day's extreme
+        if (beyond(c.close, dayExtreme)) {
+          newHighIdx = k;
+          step = 5;
+        }
+      }
+    } else if (step === 7) {
+      if (beyond(c.close, dayExtreme)) {
+        const entry = c.close;
+        const limit = prevClose * (1 + (long ? 1 : -1) * (CONTINUATION_LIMIT_PCT / 100));
+        if (beyond(entry, limit)) return null; // too far from yesterday's close
+        let nifty = null;
+        if (opts.niftyMax != null) {
+          nifty = niftyChange(day, c.minute);
+          const against = nifty == null ? null : long ? -nifty : nifty;
+          if (against == null || against > opts.niftyMax) return null;
+        }
+        return sizeAndSimulate({
+          symbol,
+          day,
+          candles,
+          entryIdx: k,
+          side,
+          entry,
+          stop,
+          entryAtClose: true,
+          extra: { newHighTime: candles[newHighIdx].date.toISOString(), nifty: nifty == null ? null : +nifty.toFixed(2) },
+        });
+      }
+    }
+    dayExtreme = long ? Math.max(dayExtreme, c.high) : Math.min(dayExtreme, c.low);
+  }
+  return null;
+}
+
+// Sizes the position to RISK_PER_TRADE, simulates it and applies slippage and charges.
+function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, entryAtClose = false, extra = {} }) {
+  const long = side === "long";
+  if (stop == null || (long ? entry <= stop : entry >= stop)) return null;
+  const riskPerShare = Math.abs(entry - stop);
+  const qty = Math.floor(Math.min(RISK_PER_TRADE / riskPerShare, MAX_NOTIONAL / entry));
+  if (qty < 1) return null;
+  const result = simulate({ candles, entryIdx, side, stop, entryAtClose });
+  const fillEntry = slip(entry, side, true);
+  const fillExit = slip(result.exit, side, false);
+  const gross = (long ? fillExit - fillEntry : fillEntry - fillExit) * qty;
+  const cost = charges(side, qty, fillEntry, fillExit);
+  return {
+    symbol,
+    day,
+    time: candles[entryIdx].date.toISOString(),
+    side,
+    ...extra,
     qty,
     entry: +fillEntry.toFixed(2),
     stop: +stop.toFixed(2),
@@ -261,7 +379,11 @@ function main() {
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, NO Nifty check", skipPrevMovePct: 3, niftyMax: null },
     { name: "TEST 3: Gap >= 2% fade, skip if yesterday moved >= 3% same way, Nifty check 0.4%", skipPrevMovePct: 3, niftyMax: 0.4 },
   ];
-  const trades = Object.fromEntries(variants.map((v) => [v.name, []]));
+  const continuationVariants = [
+    { name: "CONTINUATION: break, pullback, new-high close, 2 higher highs, close above day high, Nifty check 0.2%", niftyMax: 0.2 },
+    { name: "CONTINUATION: same setup, NO Nifty check", niftyMax: null },
+  ];
+  const trades = Object.fromEntries([...variants, ...continuationVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -281,6 +403,10 @@ function main() {
       const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
       for (const v of variants) {
         const t = gapFadeTrade(ctx, v);
+        if (t) trades[v.name].push(t);
+      }
+      for (const v of continuationVariants) {
+        const t = continuationTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
     }
