@@ -127,15 +127,17 @@ function describeStrategies(settings) {
   const window = clockLabel(breakWindowEnd(settings));
   return {
     gap: {
-      label: "Gap fade",
+      label: "9:15 break + B1",
       type: "Intraday",
       rules: [
-        `Gap ≥ ${settings.orbMinGapPct}% at the open`,
-        `A candle breaks the 9:15 candle's low before ${window} (gap-down: its high)`,
-        "Then B1 against the gap: pullback (higher high) → a candle closes below the day low → next 2 candles each make a lower low; no candle above the previous high inside the leg",
-        "SELL when B1 completes (gap-down: mirror → BUY) · entries until 14:30",
-        "Cancelled if the 9:15 candle's other end trades before the entry",
-        "Stop: the 9:15 candle's other end · exit 15:15",
+        "Every F&O stock, every day — no gap check, both sides",
+        `A candle breaks the 9:15 candle's low before ${window} → look for SELL (breaks its high → BUY)`,
+        "Pullback: one or more candles against the trade (BUY: lower lows · SELL: higher highs) — any number allowed",
+        "Recovery starts at the first candle beyond the previous candle's high (BUY) / low (SELL)",
+        "From then until B1 completes no candle may break the previous candle's low (BUY) / high (SELL), else the leg fails and it is a new pullback",
+        "B1: a candle closes above the day high (BUY) / below the day low (SELL), then the next 2 candles each break the previous high / low → enter there",
+        "Entries until 14:30 · one trade per stock per day",
+        "Cancelled if the 9:15 candle's other end trades before the entry · stop there · exit 15:15",
       ],
     },
     pullback: {
@@ -672,60 +674,55 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
-  // Gap fade: a candle in the break window crosses the 9:15 candle's low (gap-up) / high (gap-down), then
-  // enter when burst 1 against the gap completes. Stop at the 9:15 candle's other end.
+  // 9:15 break + B1, any stock, any day (no gap check), both sides: a candle in the break window crosses the
+  // 9:15 candle's low -> wait for a down-burst B1 -> SELL; or crosses its high -> up-burst B1 -> BUY. Trading
+  // through the 9:15 candle's other end before the entry cancels that side; the stop is that other end. When
+  // both sides set up, the one whose B1 completes first is taken (one trade per stock per day).
   function replayGap(stock, session, niftyChangeAt) {
     const { settings } = state;
-    const [c1, c2] = session.today;
-    if (!c1 || !c2 || !session.prev.length) return null;
+    const { today } = session;
+    const c1 = today[0];
+    if (!c1 || today.length < 2 || !session.prev.length) return null;
     const prevClose = session.prev[session.prev.length - 1].close;
     const gapPct = ((c1.open - prevClose) / prevClose) * 100;
-    if (Math.abs(gapPct) < settings.orbMinGapPct || Math.abs(gapPct) >= settings.orbMaxGapPct) return null;
 
-    const side = gapPct > 0 ? "short" : "long";
-    const short = side === "short";
-    const level = short ? c1.low : c1.high;
-    const stopLevel = short ? c1.high : c1.low;
-    let entryIdx = null;
-    let entry;
-    if (settings.orbEntry === "break") {
+    let best = null;
+    for (const short of [true, false]) {
+      const level = short ? c1.low : c1.high;
+      const stopLevel = short ? c1.high : c1.low;
+      let breakIdx = null;
       // the break may come on any of the next orbBreakCandles candles; crossing the stop side first cancels it
-      for (let k = 1; k <= settings.orbBreakCandles && k < session.today.length; k += 1) {
-        const c = session.today[k];
+      for (let k = 1; k <= settings.orbBreakCandles && k < today.length; k += 1) {
+        const c = today[k];
         if (short ? c.low < level : c.high > level) {
-          entryIdx = k;
-          entry = short ? Math.min(level, c.open) : Math.max(level, c.open);
+          breakIdx = k;
           break;
         }
-        if (short ? c.high > stopLevel : c.low < stopLevel) return null;
+        if (short ? c.high > stopLevel : c.low < stopLevel) break;
       }
-      if (entryIdx == null) return null;
-    } else {
-      if (!(short ? c2.close < level : c2.close > level)) return null;
-      entryIdx = 1;
-      entry = c2.close;
+      if (breakIdx == null) continue;
+      const burst = findGapBurst(today, breakIdx + 1, short, stopLevel);
+      if (burst && (!best || burst.idx < best.idx)) best = { ...burst, short, stopLevel };
     }
-    const burst = findGapBurst(session.today, entryIdx + 1, short, stopLevel);
-    if (!burst) return null;
-    entryIdx = burst.idx;
-    entry = burst.price;
-    const breakCandle = session.today[entryIdx];
-    // Nifty measured at the breakout candle's close, as in the backtest
-    const nifty = niftyCheck(side, niftyChangeAt(breakCandle.date));
+    if (!best) return null;
+
+    const side = best.short ? "short" : "long";
+    // Nifty measured at the entry candle (off in paper unless AUTOTRADE_NIFTY_FILTER=true)
+    const nifty = niftyCheck(side, niftyChangeAt(today[best.idx].date));
     if (!nifty.ok) return null;
     return paperPosition({
       stock,
       session,
-      strategy: short ? "GAP-UP SELL" : "GAP-DOWN BUY",
+      strategy: best.short ? "B1 SELL" : "B1 BUY",
       strategyKey: "gap",
       side,
-      entryIdx,
-      fromIdx: entryIdx + 1,
-      entry,
+      entryIdx: best.idx,
+      fromIdx: best.idx + 1,
+      entry: best.price,
       refDistance: c1.high - c1.low,
-      stopPrice: side === "short" ? c1.high : c1.low,
+      stopPrice: best.stopLevel,
       rr: settings.orbRR,
-      reason: [`gap ${gapPct.toFixed(2)}%`, "B1", nifty.text].filter(Boolean).join(", "),
+      reason: [`9:15 ${best.short ? "low" : "high"} broken, B1`, `open ${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(2)}%`, nifty.text].filter(Boolean).join(", "),
     });
   }
 
@@ -1032,31 +1029,6 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     }
   }
 
-  // 9:20 heads-up: the stocks that gapped and the 9:15 level that must break first; the entry itself comes later,
-  // when burst 1 against the gap completes (a separate alert).
-  async function sendWatchlistAlert() {
-    const { settings } = state;
-    let niftyText = "";
-    if (settings.niftyFilter) {
-      const change = await getNiftyChange().catch(() => null);
-      niftyText = change == null ? "" : ` Nifty now ${change >= 0 ? "+" : ""}${change.toFixed(2)}%.`;
-    }
-    if (!state.orbCandidates.length) {
-      sendAlert(`👀 9:20 watchlist: no stock gapped ≥ ${settings.orbMinGapPct}% today.${niftyText}`);
-      return;
-    }
-    const lines = state.orbCandidates.map((c) =>
-      c.side === "short"
-        ? `🔴 ${c.symbol} gap +${c.gapPct.toFixed(2)}% · watch for a break below ${money(c.level)}, then B1 → SELL · stop ${money(c.stopLevel)}`
-        : `🟢 ${c.symbol} gap ${c.gapPct.toFixed(2)}% · watch for a break above ${money(c.level)}, then B1 → BUY · stop ${money(c.stopLevel)}`
-    );
-    const until = clockLabel(breakWindowEnd(settings));
-    const rule = settings.niftyFilter
-      ? `The 9:15 level must break before ${until} without trading through the stop first; the trade alert comes when B1 completes, and Nifty is not more than ${settings.niftyMaxAgainstPct}% in the gap's direction.`
-      : `The 9:15 level must break before ${until} without trading through the stop first; the trade alert comes when B1 completes (no order at the break).`;
-    sendAlert([`👀 9:20 watchlist (${state.orbCandidates.length})`, ...lines, rule + niftyText].join("\n"));
-  }
-
   async function replayPaperSession(now, marketOpen) {
     const { day, positions } = await computeSessionSignals(now, {
       marketOpen,
@@ -1074,11 +1046,6 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
 
   async function paperTick(now) {
     const marketOpen = now.weekday >= 1 && now.weekday <= 5 && now.minute >= 9 * 60 + 15 && now.minute <= 15 * 60 + 30;
-    const watchlistWindow = now.minute > 9 * 60 + 20 || (now.minute === 9 * 60 + 20 && now.second >= 5);
-    if (marketOpen && state.activeStrategies.has("gap") && !state.orbPrepared && watchlistWindow && now.minute < breakWindowEnd(state.settings)) {
-      await prepareOrb();
-      await sendWatchlistAlert();
-    }
     // during market hours: once per completed 5-min candle; otherwise once per calendar day
     const key = marketOpen ? `${now.dateKey}-${now.minute - (now.minute % 5)}` : `closed-${now.dateKey}`;
     if (key === state.lastReplayKey || (marketOpen && now.second < 5)) return;

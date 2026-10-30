@@ -24,7 +24,7 @@ import TwoDayChart from './twoDayChart';
 import DailyHoldChart from './dailyHoldChart';
 
 const STRATEGY_TABS = [
-    { key: 'gap', label: 'Gap fade' },
+    { key: 'gap', label: '9:15 break + B1' },
     { key: 'pullback', label: 'Gap + pullback' },
     { key: 'swing', label: '3-burst swing (15 days)' },
 ];
@@ -227,7 +227,7 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                 {!loading && data && (
                     <>
                         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(3, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' }, gap: 1.5 }}>
-                            <StatCard label="Signals" value={summary.signals} hint={swing ? `3-burst days in ${data.tradingDays} sessions` : `${data.gapDays} gap days in ${data.tradingDays} sessions`} />
+                            <StatCard label="Signals" value={summary.signals} hint={swing ? `3-burst days in ${data.tradingDays} sessions` : strategy === 'gap' ? `in ${data.tradingDays} sessions (no gap check)` : `${data.gapDays} gap days in ${data.tradingDays} sessions`} />
                             <StatCard label="Win rate" value={summary.winRate == null ? '-' : `${summary.winRate}%`} color="#b45309" hint={`${summary.wins} winners`} />
                             <StatCard label="Paper P&L" value={money(summary.totalPnl)} color={tone(summary.totalPnl)} hint="before charges" />
                             {swing ? (

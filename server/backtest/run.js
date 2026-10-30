@@ -114,12 +114,13 @@ function simulate({ candles, entryIdx, side, stop }) {
 // opts.niftyMax:        skip when Nifty moves with the gap by more than this % (null = no check)
 // opts.skipPrevMovePct: skip when the stock already moved this much yesterday in the gap's direction
 // opts.b1:              after the break, wait for burst 1 against the gap (see findGapBurst) and enter there
+// opts.side:            trade this side whatever the gap (no gap check); used by anySideTrade
 function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyChange }, opts) {
   const c1 = candles[0];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
-  if (Math.abs(gapPct) < (opts.minGap ?? MIN_GAP_PCT)) return null;
+  if (!opts.side && Math.abs(gapPct) < (opts.minGap ?? MIN_GAP_PCT)) return null;
 
-  const side = gapPct > 0 ? "short" : "long";
+  const side = opts.side ?? (gapPct > 0 ? "short" : "long");
   const short = side === "short";
 
   // a second strong move in a row is more often news or momentum than an overreaction
@@ -228,6 +229,13 @@ function findGapBurst(candles, from, short, stop, lastEntryMinute) {
     extreme = Math.max(extreme, c.high);
   }
   return null;
+}
+
+// No gap check: try both sides (break of the 9:15 low -> SELL, of its high -> BUY) and take the one that
+// enters first; one trade per stock per day.
+function anySideTrade(ctx, opts) {
+  const tries = ["short", "long"].map((side) => gapFadeTrade(ctx, { ...opts, side })).filter(Boolean);
+  return tries.sort((a, b) => a.time.localeCompare(b.time))[0] ?? null;
 }
 
 // ---------- strategy 2: gap fade with pullback confirmation ----------
@@ -499,7 +507,9 @@ function main() {
     { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3 },
     { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.2%", niftyMax: 0.2, breakCandles: 3 },
     // after the break, enter only when burst 1 against the gap completes (paper signals)
-    { name: "Gap >= 1% fade, break within 3 candles, then B1 -> entry at B1, NO Nifty check (paper signals)", niftyMax: null, breakCandles: 3, b1: true },
+    // no gap check, both sides: break of the 9:15 low/high within 3 candles, then B1 (paper signals)
+    { name: "NO GAP CHECK: any stock, break of 9:15 low/high within 3 candles, then B1 -> entry at B1, NO Nifty check (paper signals)", niftyMax: null, breakCandles: 3, b1: true, anySide: true },
+    { name: "Gap >= 1% fade, break within 3 candles, then B1 -> entry at B1, NO Nifty check", niftyMax: null, breakCandles: 3, b1: true },
     { name: "Gap >= 1% fade, break within 3 candles, then B1 -> entry at B1, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3, b1: true },
     // Test 1: only big gaps
     { name: "TEST 1: Gap >= 4% fade, Nifty check 0.4%", minGap: 4, niftyMax: 0.4 },
@@ -537,7 +547,7 @@ function main() {
       const prevDayChange = twoDaysAgo ? ((prevClose - twoDaysAgo[twoDaysAgo.length - 1].close) / twoDaysAgo[twoDaysAgo.length - 1].close) * 100 : null;
       const ctx = { symbol, day, candles, prevClose, prevDayChange, niftyChange };
       for (const v of variants) {
-        const t = gapFadeTrade(ctx, v);
+        const t = v.anySide ? anySideTrade(ctx, v) : gapFadeTrade(ctx, v);
         if (t) trades[v.name].push(t);
       }
       for (const v of pullbackVariants) {
