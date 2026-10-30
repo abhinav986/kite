@@ -208,12 +208,6 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                     <Typography variant="h3" sx={{ fontSize: { xs: '1.8rem', md: '2.3rem' }, lineHeight: 1, color: '#0f172a', fontWeight: 800, letterSpacing: '-0.04em', overflowWrap: 'anywhere' }}>
                         {data?.symbol || stockName}
                     </Typography>
-                    <Typography sx={{ mt: 1, color: '#64748b', fontSize: 14 }}>
-                        {data?.name ? `${data.name} · ` : ''}
-                        {data?.strategyInfo
-                            ? `${data.strategyInfo.label}: ${data.strategyInfo.rules.join(' · ')} · past ${months} months of 5-min candles · P&L uses 1/3 of balance (${money(data.slotCapital)}) per trade, before charges`
-                            : `Past ${months} months of 5-minute candles, same rules as the paper signals.`}
-                    </Typography>
                 </Box>
 
                 {loading && (

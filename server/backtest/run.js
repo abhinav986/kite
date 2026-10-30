@@ -198,7 +198,9 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
 // high = B1. Inside the leg no candle may trade below the previous candle's low (else it is a new pullback).
 // Engulf check: after a red candle R, if one or more candles first trade below R's low and then above R's high,
 // their lowest low must not break before B1 (else no trade on this side today); a 1-candle engulf is not a
-// pullback. Cancelled if `stop` trades or the last entry time passes first. Returns { idx, price } or null.
+// pullback. A lower low counts as a pullback only after a candle has traded above the day high since the last
+// pullback (a failed leg without a new day high just waits for one). Cancelled if `stop` trades or the last
+// entry time passes first. Returns { idx, price } or null.
 function findGapBurst(candles, from, short, stop, lastEntryMinute) {
   // mirror a short setup so the same "up-burst" logic works for both sides
   const m = short ? (c) => ({ high: -c.low, low: -c.high, close: -c.close, open: -c.open }) : (c) => c;
@@ -206,6 +208,7 @@ function findGapBurst(candles, from, short, stop, lastEntryMinute) {
   let extreme = m(candles[0]).high;
   let floor = -Infinity; // highest engulf low so far: no candle may trade below it before B1
   let open = []; // engulf candidates: { r, rHigh, rLow, brokeLow, groupLow }
+  let newHigh = false; // a candle traded above the day high since the last pullback
   for (let k = 1; k < candles.length; k += 1) {
     const raw = candles[k];
     const c = m(raw);
@@ -233,11 +236,17 @@ function findGapBurst(candles, from, short, stop, lastEntryMinute) {
 
     if (k >= from) {
       if (step === "wait") {
-        if (c.low < prev.low && !oneCandleEngulf) step = "pullback"; // a 1-candle engulf is not a pullback
+        // a pullback counts only after a new day high, and a 1-candle engulf is not a pullback
+        if (c.low < prev.low && newHigh && !oneCandleEngulf) {
+          step = "pullback";
+          newHigh = false;
+        }
       } else if (step === "pullback") {
         if (c.low >= prev.low && c.high > prev.high) step = c.close > extreme ? "e1" : "close";
       } else if (c.low < prev.low) {
-        step = oneCandleEngulf ? "wait" : "pullback";
+        // the leg fails: a new pullback only if this leg made a new day high, else wait for one
+        step = newHigh && !oneCandleEngulf ? "pullback" : "wait";
+        newHigh = false;
       } else if (step === "close") {
         if (c.close > extreme) step = "e1";
       } else if (c.high > prev.high) {
@@ -250,6 +259,7 @@ function findGapBurst(candles, from, short, stop, lastEntryMinute) {
         step = c.close > extreme ? "e1" : "close";
       }
     }
+    if (c.high > extreme) newHigh = true;
     extreme = Math.max(extreme, c.high);
   }
   return null;
