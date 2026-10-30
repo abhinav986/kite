@@ -118,6 +118,47 @@ function roundToTick(price, tick, direction) {
   return +(rounded * tick).toFixed(2);
 }
 
+// Paper-signal strategies the UI can start/stop one by one (live mode supports only "gap").
+const PAPER_STRATEGY_KEYS = ["gap", "pullback", "swing"];
+const SWING_HOLD_DAYS = 15;
+const SWING_BURSTS = 3;
+
+function describeStrategies(settings) {
+  const window = clockLabel(breakWindowEnd(settings));
+  return {
+    gap: {
+      label: "Gap fade",
+      type: "Intraday",
+      rules: [
+        `Gap ≥ ${settings.orbMinGapPct}% at the open`,
+        `Gap-up: SELL when a candle breaks the 9:15 candle's low before ${window} (gap-down: BUY above its high)`,
+        "Cancelled if the 9:15 candle's other end trades first",
+        "Stop: the 9:15 candle's other end · exit 15:15",
+      ],
+    },
+    pullback: {
+      label: "Gap + pullback",
+      type: "Intraday",
+      rules: [
+        `Gap ≥ ${settings.orbMinGapPct}% at the open`,
+        "A candle crosses the 9:15 candle's low (gap-up), then a pullback candle makes a higher high",
+        "SELL when a later candle breaks the day's low (gap-down: mirror → BUY above the day's high)",
+        "Cancelled if the 9:15 candle's other end trades first · stop there · entries until 14:30 · exit 15:15",
+      ],
+    },
+    swing: {
+      label: "3-burst swing",
+      type: `Swing · hold ${SWING_HOLD_DAYS} days`,
+      rules: [
+        "Burst = pullback candle (lower low) → a candle closes above the day high → next 2 candles each break the previous high",
+        `${SWING_BURSTS} bursts in one day → BUY at that day's close (delivery)`,
+        `Sell at the close of the ${SWING_HOLD_DAYS}th trading day · no stop loss · BUY only`,
+        "One holding per stock at a time",
+      ],
+    },
+  };
+}
+
 function averageVolume(candles) {
   if (candles.length < VOLUME_LOOKBACK) return null;
   return candles.slice(-VOLUME_LOOKBACK).reduce((sum, c) => sum + (c.volume || 0), 0) / VOLUME_LOOKBACK;
@@ -149,6 +190,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     notifiedPaperIds: new Set(),
     notifiedExitIds: new Set(),
     dateJobs: new Map(), // dateKey -> past-date scan (date picker)
+    activeStrategies: new Set(), // paper strategies started from the UI: "gap" | "pullback" | "swing"
   };
 
   function log(message) {
@@ -221,10 +263,11 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     await sleep(wait);
   }
 
-  async function fetchCompletedCandles(token, toDateKey, toMinute) {
+  // daysBack: calendar days of history before toDateKey (7 covers the previous session; the swing needs ~45)
+  async function fetchCompletedCandles(token, toDateKey, toMinute, daysBack = 7) {
     await throttleHistorical();
     const candles = await withKiteAuth(() =>
-      kite.getHistoricalData(token, "5minute", kiteTime(shiftDateKey(toDateKey, -7), 9 * 60 + 15), kiteTime(toDateKey, toMinute), false, false)
+      kite.getHistoricalData(token, "5minute", kiteTime(shiftDateKey(toDateKey, -daysBack), 9 * 60 + 15), kiteTime(toDateKey, toMinute), false, false)
     );
     // a candle stamped hh:mm is complete at hh:mm + 5
     const nowMs = Date.now();
@@ -554,7 +597,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
-  function paperPosition({ stock, session, strategy, side, entryIdx, fromIdx, entry, refDistance, stopPrice, rr, reason, ltp }) {
+  function paperPosition({ stock, session, strategy, strategyKey, side, entryIdx, fromIdx, entry, refDistance, stopPrice, rr, reason, ltp }) {
     const { settings } = state;
     const long = side === "long";
     const qty = Math.max(1, Math.floor((state.slotCapital * settings.leverage) / entry));
@@ -571,6 +614,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       id: `${session.day}-${stock.symbol}-${strategy}`,
       day: session.day,
       strategy,
+      strategyKey,
       symbol: stock.symbol,
       side,
       qty,
@@ -629,6 +673,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       stock,
       session,
       strategy: short ? "GAP-UP SELL" : "GAP-DOWN BUY",
+      strategyKey: "gap",
       side,
       entryIdx,
       fromIdx: entryIdx + 1,
@@ -638,6 +683,147 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       rr: settings.orbRR,
       reason: [`gap ${gapPct.toFixed(2)}%`, nifty.text, vol.text].filter(Boolean).join(", "),
     });
+  }
+
+  // Gap fade with pullback confirmation (gap-up -> SELL; gap-down mirror): a candle crosses the 9:15 candle's
+  // low, then a pullback candle makes a higher high, then a candle breaks the day's low -> SELL at that low.
+  // Trading through the 9:15 candle's other end first cancels it; the stop is that other end.
+  function replayPullback(stock, session) {
+    const { settings } = state;
+    const { today } = session;
+    const c1 = today[0];
+    if (!c1 || today.length < 3 || !session.prev.length) return null;
+    const prevClose = session.prev[session.prev.length - 1].close;
+    const gapPct = ((c1.open - prevClose) / prevClose) * 100;
+    if (Math.abs(gapPct) < settings.orbMinGapPct || Math.abs(gapPct) >= settings.orbMaxGapPct) return null;
+    const short = gapPct > 0;
+    const side = short ? "short" : "long";
+    const firstStop = short ? c1.high : c1.low;
+
+    let dayExtreme = short ? c1.low : c1.high;
+    let broke = false;
+    let pulledBack = false;
+    for (let k = 1; k < today.length; k += 1) {
+      const c = today[k];
+      const prev = today[k - 1];
+      if (candleMinute(c) > settings.lastEntry) return null;
+      const towards = short ? c.low : c.high;
+      if (pulledBack && (short ? towards < dayExtreme : towards > dayExtreme)) {
+        const entry = short ? Math.min(dayExtreme, c.open) : Math.max(dayExtreme, c.open);
+        return paperPosition({
+          stock,
+          session,
+          strategy: short ? "PULLBACK SELL" : "PULLBACK BUY",
+          strategyKey: "pullback",
+          side,
+          entryIdx: k,
+          fromIdx: k + 1,
+          entry,
+          refDistance: Math.abs(firstStop - entry),
+          stopPrice: firstStop,
+          rr: 0,
+          reason: `gap ${gapPct.toFixed(2)}%, pullback, break of the day ${short ? "low" : "high"}`,
+        });
+      }
+      if (short ? c.high > firstStop : c.low < firstStop) return null;
+      if (!broke) {
+        if (short ? c.low < c1.low : c.high > c1.high) broke = true;
+      } else if (!pulledBack && (short ? c.high > prev.high : c.low < prev.low)) {
+        pulledBack = true;
+      }
+      dayExtreme = short ? Math.min(dayExtreme, c.low) : Math.max(dayExtreme, c.high);
+    }
+    return null;
+  }
+
+  // Burst = pullback candle (lower low) -> a candle closes above the day's high -> the next 2 candles each trade
+  // above the previous candle's high (if not, wait for another close above the day's high). Returns how many
+  // bursts the day had and the candle index where burst number SWING_BURSTS completed.
+  function findBursts(candles) {
+    let count = 0;
+    let step = "pullback";
+    let dayHigh = candles[0]?.high ?? 0;
+    for (let k = 1; k < candles.length; k += 1) {
+      const c = candles[k];
+      const prev = candles[k - 1];
+      if (step === "pullback") {
+        if (c.low < prev.low) step = "close";
+      } else if (step === "close") {
+        if (c.close > dayHigh) step = "hh1";
+      } else if (c.high > prev.high) {
+        if (step === "hh1") step = "hh2";
+        else {
+          count += 1;
+          if (count >= SWING_BURSTS) return { count, completedIdx: k };
+          step = "pullback";
+        }
+      } else {
+        step = c.close > dayHigh ? "hh1" : "close";
+      }
+      dayHigh = Math.max(dayHigh, c.high);
+    }
+    return { count, completedIdx: null };
+  }
+
+  // 3-burst swing trades over a list of sessions, one holding per stock at a time:
+  // [{ entryIdx, exitIdx (null while held), burstIdx }]
+  function swingTradesFor(sessions) {
+    const trades = [];
+    let nextAllowed = 0;
+    for (let i = 0; i < sessions.length; i += 1) {
+      if (i < nextAllowed) continue;
+      const { completedIdx } = findBursts(sessions[i].candles);
+      if (completedIdx == null) continue;
+      const exitIdx = i + SWING_HOLD_DAYS < sessions.length ? i + SWING_HOLD_DAYS : null;
+      trades.push({ entryIdx: i, exitIdx, burstIdx: completedIdx });
+      nextAllowed = i + SWING_HOLD_DAYS;
+    }
+    return trades;
+  }
+
+  // A swing holding as seen on session asOfIdx: bought at the close of the entry day, sold at the close of
+  // day 15 (closed once asOfIdx reaches it). sessionComplete=false means the entry day is still trading, so
+  // the entry is provisional ("buy at today's close").
+  function swingPosition(stock, sessions, trade, asOfIdx, { ltp, sessionComplete = true } = {}) {
+    const { settings } = state;
+    const entrySession = sessions[trade.entryIdx];
+    const entryCandles = entrySession.candles;
+    const entry = entryCandles[entryCandles.length - 1].close;
+    const qty = Math.max(1, Math.floor((state.slotCapital * settings.leverage) / entry));
+    const closed = trade.exitIdx != null && trade.exitIdx <= asOfIdx;
+    const asOf = sessions[Math.min(asOfIdx, sessions.length - 1)].candles;
+    const exitCandles = closed ? sessions[trade.exitIdx].candles : null;
+    const exit = closed ? exitCandles[exitCandles.length - 1].close : null;
+    const mark = closed ? exit : ltp ?? asOf[asOf.length - 1].close;
+    const holdDay = Math.min(asOfIdx - trade.entryIdx, SWING_HOLD_DAYS);
+    const provisional = trade.entryIdx === asOfIdx && !sessionComplete;
+    return {
+      id: `${entrySession.day}-${stock.symbol}-SWING`,
+      day: sessions[asOfIdx].day,
+      strategy: "SWING BUY",
+      strategyKey: "swing",
+      symbol: stock.symbol,
+      side: "long",
+      qty,
+      entry: +entry.toFixed(2),
+      stop: null,
+      target: null,
+      reason: provisional
+        ? `${SWING_BURSTS} bursts by ${clock(entryCandles[trade.burstIdx].date)} · buy at today's close`
+        : `${SWING_BURSTS} bursts on ${entrySession.day} · hold day ${holdDay}/${SWING_HOLD_DAYS}`,
+      time: entryCandles[entryCandles.length - 1].date,
+      entryDay: entrySession.day,
+      exitDay: trade.exitIdx != null ? sessions[trade.exitIdx].day : null,
+      holdDay,
+      provisional,
+      status: closed ? "closed" : "open",
+      exit: closed ? +exit.toFixed(2) : null,
+      exitReason: closed ? "day 15" : undefined,
+      closedAt: closed ? exitCandles[exitCandles.length - 1].date : undefined,
+      lastPrice: mark,
+      pnl: +((mark - entry) * qty).toFixed(2),
+      returnPct: +(((mark - entry) / entry) * 100).toFixed(2),
+    };
   }
 
   function replayEngulfe(stock, session, ltp) {
@@ -657,6 +843,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         stock,
         session,
         strategy: "ENGULFE",
+        strategyKey: "engulfe",
         side: result.direction === "up" ? "long" : "short",
         entryIdx: next ? k + 1 : k,
         fromIdx: next ? k + 1 : today.length,
@@ -690,33 +877,51 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
 
   // Replays the session ending at `now` ({ dateKey, minute }) for every stock and returns the signals.
   // requireDay: only accept that exact date (the date picker), so holidays return nothing.
-  async function computeSessionSignals(now, { marketOpen = false, requireDay = null, onProgress } = {}) {
-    const { strategies } = state.settings;
+  // strategies: paper strategy keys to run ("gap" | "pullback" | "swing"; "engulfe" still works if listed).
+  // For the swing, positions are the holdings open on that day plus the ones bought or sold that day.
+  async function computeSessionSignals(now, { strategies = [...state.activeStrategies], marketOpen = false, requireDay = null, onProgress } = {}) {
     const ltps = marketOpen ? await getLtps(state.universe.map((s) => s.symbol)).catch(() => ({})) : {};
     const niftyChangeAt = await loadNiftyChangeAt(now);
+    const withSwing = strategies.includes("swing");
+    const toMinute = Math.min(now.minute, 15 * 60 + 30);
     const positions = [];
     let day = null;
     let done = 0;
     for (const stock of state.universe) {
       done += 1;
       onProgress?.(`${done}/${state.universe.length}`);
-      let session;
+      let all;
       try {
-        session = splitLastSession(await fetchCompletedCandles(stock.token, now.dateKey, Math.min(now.minute, 15 * 60 + 30)));
+        all = await fetchCompletedCandles(stock.token, now.dateKey, toMinute, withSwing ? 45 : 7);
       } catch (error) {
         log(`${stock.symbol}: candle fetch failed - ${error.message}`);
         continue;
       }
+      const session = splitLastSession(all);
       if (!session || session.today.length < 2) continue;
       if (requireDay && session.day !== requireDay) continue;
       day = session.day;
-      if (strategies.includes("orb")) {
+      if (strategies.includes("gap")) {
         const p = replayGap(stock, session, niftyChangeAt);
+        if (p) positions.push(p);
+      }
+      if (strategies.includes("pullback")) {
+        const p = replayPullback(stock, session);
         if (p) positions.push(p);
       }
       if (strategies.includes("engulfe")) {
         const p = replayEngulfe(stock, session, ltps[stock.symbol]);
         if (p) positions.push(p);
+      }
+      if (withSwing) {
+        const sessions = groupSessions(all);
+        const asOfIdx = sessions.length - 1;
+        const sessionComplete = !marketOpen || session.day !== now.dateKey;
+        for (const trade of swingTradesFor(sessions)) {
+          // held on this day, bought this day, or sold this day
+          if (trade.entryIdx > asOfIdx || (trade.exitIdx != null && trade.exitIdx < asOfIdx)) continue;
+          positions.push(swingPosition(stock, sessions, trade, asOfIdx, { ltp: ltps[stock.symbol], sessionComplete }));
+        }
       }
     }
     positions.sort((a, b) => String(a.time).localeCompare(String(b.time)));
@@ -739,6 +944,10 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   // One alert per new signal and one when it exits (stop hit or 15:15), for today's session only.
   function sendSignalAlerts(positions) {
     for (const p of positions) {
+      if (p.strategyKey === "swing") {
+        sendSwingAlerts(p);
+        continue;
+      }
       const buy = p.side === "long";
       if (!state.notifiedPaperIds.has(p.id)) {
         state.notifiedPaperIds.add(p.id);
@@ -756,6 +965,24 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         const label = p.exitReason === "stop" ? "⛔ STOP HIT" : p.exitReason === "target" ? "🎯 TARGET" : "🏁 EXIT 15:15";
         sendAlert(`${label} ${p.symbol} at ${money(p.exit)} · paper P&L ${money(p.pnl)}`);
       }
+    }
+  }
+
+  // Swing holdings show for 15 days; alert only on the day they are bought and the day they are sold.
+  function sendSwingAlerts(p) {
+    if (p.entryDay === p.day && !state.notifiedPaperIds.has(p.id)) {
+      state.notifiedPaperIds.add(p.id);
+      sendAlert(
+        [
+          `🟢 SWING BUY ${p.symbol} at today's close (now ${money(p.lastPrice)})`,
+          `${SWING_BURSTS} bursts today · hold ${SWING_HOLD_DAYS} trading days · no stop loss · delivery (CNC)`,
+          `Qty for 1/${state.settings.slots} of balance: ${p.qty}`,
+        ].join("\n")
+      );
+    }
+    if (p.status === "closed" && p.exitDay === p.day && !state.notifiedExitIds.has(p.id)) {
+      state.notifiedExitIds.add(p.id);
+      sendAlert(`🏁 SWING SELL ${p.symbol} at today's close (day ${SWING_HOLD_DAYS}) ${money(p.exit)} · bought ${p.entryDay} at ${money(p.entry)} · paper P&L ${money(p.pnl)} (${p.returnPct}%)`);
     }
   }
 
@@ -802,7 +1029,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   async function paperTick(now) {
     const marketOpen = now.weekday >= 1 && now.weekday <= 5 && now.minute >= 9 * 60 + 15 && now.minute <= 15 * 60 + 30;
     const watchlistWindow = now.minute > 9 * 60 + 20 || (now.minute === 9 * 60 + 20 && now.second >= 5);
-    if (marketOpen && state.settings.strategies.includes("orb") && !state.orbPrepared && watchlistWindow && now.minute < breakWindowEnd(state.settings)) {
+    if (marketOpen && state.activeStrategies.has("gap") && !state.orbPrepared && watchlistWindow && now.minute < breakWindowEnd(state.settings)) {
       await prepareOrb();
       await sendWatchlistAlert();
     }
@@ -856,8 +1083,9 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
 
   // Runs the paper-signal rules (same replayGap as the live scan) on one stock for the past `months`, and
   // returns each signal day with its candles and the previous day's, for the table and the chart.
-  async function backtestStock({ token, months = 6 }) {
-    const cacheKey = `${token}-${months}`;
+  async function backtestStock({ token, months = 6, strategy = "gap" }) {
+    if (!PAPER_STRATEGY_KEYS.includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
+    const cacheKey = `${token}-${months}-${strategy}`;
     const cached = stockHistoryCache.get(cacheKey);
     if (cached && Date.now() - cached.at < 10 * 60000) return cached.result;
 
@@ -887,7 +1115,29 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     const signals = [];
     const chartCandles = {};
     let gapDays = 0;
-    for (let i = 1; i < sessions.length; i += 1) {
+    if (strategy === "swing") {
+      // bought at the close of a 3-burst day, sold at the close of day 15 (still held if the data ends first)
+      const startIdx = sessions.findIndex((s) => s.day >= periodStart);
+      for (const trade of swingTradesFor(sessions)) {
+        const i = trade.entryIdx;
+        if (startIdx < 0 || i < startIdx || i < 1) continue;
+        const p = swingPosition(stock, sessions, trade, sessions.length - 1);
+        const prev = sessions[i - 1].candles;
+        const prevClose = prev[prev.length - 1].close;
+        const holdDaily = sessions.slice(i, (trade.exitIdx ?? sessions.length - 1) + 1).map((s) => ({
+          day: s.day,
+          open: s.candles[0].open,
+          high: Math.max(...s.candles.map((c) => c.high)),
+          low: Math.min(...s.candles.map((c) => c.low)),
+          close: s.candles[s.candles.length - 1].close,
+        }));
+        const dayChange = ((sessions[i].candles[0].open - prevClose) / prevClose) * 100;
+        signals.push({ ...p, day: p.entryDay, prevDay: sessions[i - 1].day, prevClose, gapPct: +dayChange.toFixed(2), points: +(p.lastPrice - p.entry).toFixed(2), r: p.returnPct, holdDaily });
+        chartCandles[sessions[i].day] = sessions[i].candles;
+        chartCandles[sessions[i - 1].day] = prev;
+      }
+    }
+    for (let i = 1; strategy !== "swing" && i < sessions.length; i += 1) {
       const { day, candles } = sessions[i];
       if (day < periodStart || candles.length < 2) continue;
       const prev = sessions[i - 1].candles;
@@ -896,7 +1146,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       if (Math.abs(gapPct) >= state.settings.orbMinGapPct) gapDays += 1;
 
       const session = { day, today: candles, prev, history: [...prev, ...candles], offset: prev.length };
-      const p = replayGap(stock, session, niftyChangeAt);
+      const p = strategy === "pullback" ? replayPullback(stock, session) : replayGap(stock, session, niftyChangeAt);
       if (!p) continue;
       // R = points made / points risked (null when trading without a stop)
       const exitPrice = p.exit ?? p.lastPrice;
@@ -925,11 +1175,14 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       tradingDays: sessions.filter((s) => s.day >= periodStart).length,
       gapDays,
       slotCapital: state.slotCapital,
+      strategy,
+      strategyInfo: describeStrategies(state.settings)[strategy],
       rules: {
         minGapPct: state.settings.orbMinGapPct,
         breakCandles: state.settings.orbBreakCandles,
         niftyFilter: state.settings.niftyFilter,
         useStopLoss: state.settings.useStopLoss,
+        holdDays: SWING_HOLD_DAYS,
       },
       summary: {
         signals: signals.length,
@@ -974,6 +1227,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         const result = await computeSessionSignals(
           { dateKey, minute: 15 * 60 + 30 },
           {
+            strategies: PAPER_STRATEGY_KEYS, // all of them; the UI filters by strategy
             requireDay: dateKey,
             onProgress: (progress) => {
               job.progress = progress;
@@ -1135,21 +1389,36 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   }
 
   return {
-    start() {
+    // Starts one paper strategy ("gap" | "pullback" | "swing"); the engine runs while any is started.
+    // Live mode supports only the gap fade.
+    start(strategy = "gap") {
+      if (!PAPER_STRATEGY_KEYS.includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
       state.settings = readSettings();
+      if (state.settings.mode === "live" && strategy !== "gap") throw new Error("Live mode supports only the Gap fade strategy");
+      state.activeStrategies.add(strategy);
       state.capital = null;
-      state.lastReplayKey = null;
+      state.lastReplayKey = null; // rescan now with the new strategy set
       state.enabled = true;
       if (!state.timer) state.timer = setInterval(tick, TICK_MS);
-      notify(`Started. Methods: ${state.settings.strategies.join(", ")}, ${state.settings.slots} slots, stop loss ${state.settings.useStopLoss ? "on" : "off"}`);
+      notify(`Started ${describeStrategies(state.settings)[strategy].label}. Running: ${[...state.activeStrategies].join(", ")}`);
       tick();
       return this.status();
     },
-    stop() {
-      state.enabled = false;
-      clearInterval(state.timer);
-      state.timer = null;
-      notify("Stopped. Open positions (if any) are NOT closed - use square-off or Kite.");
+    // Stops one strategy (or all when none is given); open live positions are NOT closed.
+    stop(strategy) {
+      if (strategy) state.activeStrategies.delete(strategy);
+      else state.activeStrategies.clear();
+      state.positions = state.positions.filter((p) => !p.strategyKey || state.activeStrategies.has(p.strategyKey));
+      if (!state.activeStrategies.size) {
+        state.enabled = false;
+        clearInterval(state.timer);
+        state.timer = null;
+      }
+      notify(
+        state.activeStrategies.size
+          ? `Stopped ${strategy}. Still running: ${[...state.activeStrategies].join(", ")}`
+          : "Stopped. Open positions (if any) are NOT closed - use square-off or Kite."
+      );
       return this.status();
     },
     signalsForDate,
@@ -1193,6 +1462,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         orbCandidates: state.orbCandidates,
         replayProgress: state.replayProgress,
         paperSessionDay: state.paperSessionDay,
+        activeStrategies: [...state.activeStrategies],
+        strategyInfo: describeStrategies(state.settings),
         lastError: state.lastError,
         recentEvents: state.events.slice(-30),
       };

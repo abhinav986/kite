@@ -14,6 +14,8 @@ import {
     TableHead,
     TableRow,
     TextField,
+    ToggleButton,
+    ToggleButtonGroup,
     Typography,
 } from "@mui/material";
 import { get, post } from "../utils/axios";
@@ -33,7 +35,14 @@ const breakEndLabel = (settings) => {
     return `${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, "0")}`;
 };
 
+const STRATEGY_KEYS = ["gap", "pullback", "swing"];
+const STRATEGY_COLORS = { gap: "#2563eb", pullback: "#7c3aed", swing: "#0f766e" };
+
 const statusText = (p) => {
+    if (p.strategyKey === "swing") {
+        if (p.provisional) return "buy at today's close";
+        return p.status === "closed" ? `sold day 15 (${p.exitDay})` : `holding day ${p.holdDay}/15`;
+    }
     if (p.status === "open") return "open · exit by 15:15";
     if (p.exitReason === "stop") return "stop hit";
     if (p.exitReason === "target") return "target hit";
@@ -46,6 +55,7 @@ const SignalsPanel = () => {
     const [trader, setTrader] = useState(null);
     const [date, setDate] = useState(istToday());
     const [dateResult, setDateResult] = useState(null);
+    const [strategyFilter, setStrategyFilter] = useState("all");
     const [error, setError] = useState("");
     const isToday = date === istToday();
 
@@ -92,7 +102,11 @@ const SignalsPanel = () => {
     };
 
     const settings = trader?.settings;
-    const positions = isToday ? (trader?.paperSessionDay === date ? trader.positions || [] : []) : dateResult?.positions || [];
+    const strategyInfo = trader?.strategyInfo || {};
+    const active = new Set(trader?.activeStrategies || []);
+    const allPositions = isToday ? (trader?.paperSessionDay === date ? trader.positions || [] : []) : dateResult?.positions || [];
+    const positions = strategyFilter === "all" ? allPositions : allPositions.filter((p) => p.strategyKey === strategyFilter);
+    const countFor = (key) => allPositions.filter((p) => p.strategyKey === key).length;
     const scanning = isToday ? Boolean(trader?.replayProgress) : dateResult?.status === "running";
     const progress = isToday ? trader?.replayProgress : dateResult?.progress;
     const totalPnl = positions.reduce((sum, p) => sum + (p.pnl || 0), 0);
@@ -116,21 +130,11 @@ const SignalsPanel = () => {
                         )}
                         {trader?.mode === "live" && <Chip size="small" color="error" label="LIVE - real orders" />}
                     </Stack>
-                    {settings && (
-                        <Typography sx={{ color: "#475569", fontSize: 14 }}>
-                            Gap ≥ {settings.orbMinGapPct}% fade: gap-up → SELL below the 1st 5-min candle's low, gap-down → BUY above its high
-                            (break before {breakEndLabel(settings)}){settings.niftyFilter ? `, Nifty not more than ${settings.niftyMaxAgainstPct}% with the gap` : ""} ·
-                            stop at the 1st candle's other end · exit by 15:15
-                        </Typography>
-                    )}
+                    <Typography sx={{ color: "#475569", fontSize: 14 }}>
+                        Start each strategy on its own. Paper only: signals and Telegram alerts, no orders.
+                    </Typography>
                 </Box>
                 <Stack direction="row" spacing={1}>
-                    <Button variant="contained" color="success" disabled={!trader || trader.enabled} onClick={() => call("autotrader/start")}>
-                        Start
-                    </Button>
-                    <Button variant="outlined" disabled={!trader?.enabled} onClick={() => call("autotrader/stop")}>
-                        Stop
-                    </Button>
                     {trader?.mode === "live" && (
                         <Button variant="outlined" color="error" onClick={() => call("autotrader/mode", { mode: "paper" })}>
                             Switch to Paper
@@ -139,15 +143,62 @@ const SignalsPanel = () => {
                 </Stack>
             </Stack>
 
+            {trader && (
+                <Box sx={{ mt: 2, display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" }, gap: 1.5 }}>
+                    {STRATEGY_KEYS.map((key) => {
+                        const info = strategyInfo[key];
+                        if (!info) return null;
+                        const running = active.has(key);
+                        const liveBlocked = trader.mode === "live" && key !== "gap";
+                        return (
+                            <Paper
+                                key={key}
+                                elevation={0}
+                                sx={{
+                                    p: 2,
+                                    borderRadius: 3,
+                                    border: `1px solid ${running ? "rgba(21,128,61,0.45)" : "rgba(15,23,42,0.1)"}`,
+                                    background: running ? "rgba(21,128,61,0.04)" : "#fff",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                }}
+                            >
+                                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                                    <Typography sx={{ fontWeight: 800, fontSize: 16 }}>{info.label}</Typography>
+                                    <Chip size="small" label={running ? "Running" : "Stopped"} color={running ? "success" : "default"} />
+                                </Stack>
+                                <Typography sx={{ fontSize: 12, fontWeight: 700, color: STRATEGY_COLORS[key], mt: 0.25 }}>{info.type}</Typography>
+                                <Box component="ul" sx={{ pl: 2.25, my: 1, flex: 1 }}>
+                                    {info.rules.map((rule) => (
+                                        <Typography component="li" key={rule} sx={{ fontSize: 12.5, color: "#475569", mb: 0.4 }}>
+                                            {rule}
+                                        </Typography>
+                                    ))}
+                                </Box>
+                                <Button
+                                    variant={running ? "outlined" : "contained"}
+                                    color={running ? "inherit" : "success"}
+                                    disabled={liveBlocked}
+                                    onClick={() => call(running ? "autotrader/stop" : "autotrader/start", { strategy: key })}
+                                    sx={{ fontWeight: 800 }}
+                                >
+                                    {liveBlocked ? "Paper mode only" : running ? `Stop ${info.label}` : `Start ${info.label}`}
+                                </Button>
+                            </Paper>
+                        );
+                    })}
+                </Box>
+            )}
+
             {trader && !trader.enabled && (
                 <Alert severity="info" sx={{ mt: 2 }}>
-                    Click Start: it checks today's data right away and alerts you on Telegram for any match, then keeps scanning every 5 minutes
-                    during market hours - a 9:20 watchlist with the exact trigger prices, a confirmed BUY/SELL signal, and the exit (stop or 15:15).
-                    No orders are placed.
+                    Start a strategy: it checks today's data right away and alerts you on Telegram for any match, then keeps scanning every 5 minutes
+                    during market hours. Gap strategies alert the entry and the exit (stop or 15:15); the swing alerts the buy (at the day's close) and the
+                    sell after 15 trading days. No orders are placed.
                 </Alert>
             )}
 
-            <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
                 <TextField
                     type="date"
                     size="small"
@@ -160,6 +211,16 @@ const SignalsPanel = () => {
                 <Button size="small" disabled={isToday} onClick={() => setDate(istToday())}>
                     Today
                 </Button>
+                <ToggleButtonGroup size="small" exclusive value={strategyFilter} onChange={(_, v) => v && setStrategyFilter(v)}>
+                    <ToggleButton value="all" sx={{ textTransform: "none", fontWeight: 700 }}>
+                        All ({allPositions.length})
+                    </ToggleButton>
+                    {STRATEGY_KEYS.map((key) => (
+                        <ToggleButton key={key} value={key} sx={{ textTransform: "none", fontWeight: 700 }}>
+                            {strategyInfo[key]?.label || key} ({countFor(key)})
+                        </ToggleButton>
+                    ))}
+                </ToggleButtonGroup>
                 <Typography sx={{ fontWeight: 700, color: pnlColor(totalPnl) }}>
                     {positions.length} signal{positions.length === 1 ? "" : "s"} · paper P&L {price(Math.round(totalPnl))}
                 </Typography>
@@ -202,6 +263,7 @@ const SignalsPanel = () => {
                             <TableRow>
                                 <TableCell>Time</TableCell>
                                 <TableCell>Stock</TableCell>
+                                <TableCell>Strategy</TableCell>
                                 <TableCell>Signal</TableCell>
                                 <TableCell align="right">Entry price</TableCell>
                                 <TableCell align="right">Stop</TableCell>
@@ -215,8 +277,16 @@ const SignalsPanel = () => {
                         <TableBody>
                             {positions.map((p) => (
                                 <TableRow key={p.id}>
-                                    <TableCell>{timeIST(p.time)}</TableCell>
+                                    <TableCell>{p.strategyKey === "swing" && p.entryDay !== p.day ? `${p.entryDay} close` : timeIST(p.time)}</TableCell>
                                     <TableCell sx={{ fontWeight: 700 }}>{p.symbol}</TableCell>
+                                    <TableCell>
+                                        <Chip
+                                            size="small"
+                                            variant="outlined"
+                                            label={strategyInfo[p.strategyKey]?.label || p.strategy}
+                                            sx={{ fontWeight: 700, color: STRATEGY_COLORS[p.strategyKey], borderColor: STRATEGY_COLORS[p.strategyKey] }}
+                                        />
+                                    </TableCell>
                                     <TableCell>
                                         <Chip size="small" label={p.side === "long" ? "BUY" : "SELL"} color={p.side === "long" ? "success" : "error"} />
                                     </TableCell>

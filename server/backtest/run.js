@@ -5,7 +5,7 @@
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
 // Also tested: the gap fade with pullback confirmation (see gapPullbackTrade).
-// Also tested: a 15-day swing hold after 3 momentum bursts in one day (see swingTrades), against a baseline.
+// Also tested: a 15-day swing hold after 3 momentum bursts in one day (see swingTrades).
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -280,7 +280,6 @@ function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, ex
 // (if they don't, wait for another close above the day's high). When the 3rd occurrence completes on the
 // same day, BUY at that day's close (delivery) and sell at the close of the 15th trading day after.
 // No stop loss, LONG only, ₹1,00,000 per trade, one position per stock at a time.
-// The baseline buys the same stock every 15th session and holds 15 days (no pattern), for comparison.
 const HOLD_DAYS = 15;
 const SWING_NOTIONAL = 100000;
 const OCCURRENCES_NEEDED = 3;
@@ -354,15 +353,12 @@ function holdTrade(symbol, days, d) {
   };
 }
 
-function swingTrades(symbol, days, opts) {
+function swingTrades(symbol, days) {
   const out = [];
   let nextAllowed = 0; // one position per stock at a time
-  // baseline: every 15th session, starting at a per-stock offset so stocks don't all buy the same day
-  const offset = [...symbol].reduce((s, ch) => s + ch.charCodeAt(0), 0) % HOLD_DAYS;
   for (let d = 1; d < days.length; d += 1) {
     if (d < nextAllowed) continue;
-    const signal = opts.baseline ? d % HOLD_DAYS === offset : hasThreeBursts(days[d].candles);
-    if (!signal) continue;
+    if (!hasThreeBursts(days[d].candles)) continue;
     const t = holdTrade(symbol, days, d);
     if (!t) break;
     out.push(t);
@@ -459,8 +455,7 @@ function main() {
     { name: "PULLBACK: same, stop at pullback high/low, Nifty check 0.4%", stopAt: "pullback", niftyMax: 0.4 },
   ];
   const swingVariants = [
-    { name: "SWING: 3 bursts (pullback, close above day high, 2 higher highs) in a day -> buy at close, hold 15 days (R = % return)", baseline: false },
-    { name: "SWING BASELINE: same stocks bought every 15th session, hold 15 days (R = % return)", baseline: true },
+    { name: "SWING: 3 bursts (pullback, close above day high, 2 higher highs) in a day -> buy at close, hold 15 days (R = % return)" },
   ];
   const trades = Object.fromEntries([...variants, ...pullbackVariants, ...swingVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
@@ -489,7 +484,7 @@ function main() {
         if (t) trades[v.name].push(t);
       }
     }
-    for (const v of swingVariants) trades[v.name].push(...swingTrades(symbol, days, v));
+    for (const v of swingVariants) trades[v.name].push(...swingTrades(symbol, days));
   }
 
   // midpoint of the tested period, for the 1st-half / 2nd-half check

@@ -979,11 +979,17 @@ const routes = {
   },
 
   async autoTraderStart(req, res) {
-    sendJson(res, 200, autoTrader.start());
+    const body = await parseBody(req);
+    try {
+      sendJson(res, 200, autoTrader.start(body.strategy || "gap"));
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
   },
 
   async autoTraderStop(req, res) {
-    sendJson(res, 200, autoTrader.stop());
+    const body = await parseBody(req);
+    sendJson(res, 200, autoTrader.stop(body.strategy));
   },
 
   async fnoStocks(req, res) {
@@ -993,13 +999,18 @@ const routes = {
   async stockHistory(req, res, url) {
     const token = url.searchParams.get("token");
     const months = Math.min(12, Math.max(1, Number(url.searchParams.get("months")) || 6));
+    const strategy = url.searchParams.get("strategy") || "gap";
     if (!token) {
       sendJson(res, 400, { error: "token is required" });
       return;
     }
     try {
-      sendJson(res, 200, await autoTrader.backtestStock({ token, months }));
+      sendJson(res, 200, await autoTrader.backtestStock({ token, months, strategy }));
     } catch (error) {
+      if (error.message.startsWith("Unknown strategy")) {
+        sendJson(res, 400, { error: error.message });
+        return;
+      }
       if (error.message === "Not an F&O stock") {
         sendJson(res, 404, { error: error.message });
         return;

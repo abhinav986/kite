@@ -46,7 +46,8 @@ const spreadLabels = (labels, minGap, top, bottom) => {
     return sorted;
 };
 
-const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, breakCandles = 3 }) => {
+// showGap / showRange: draw the gap badge and the 1st-candle range (gap strategies); off for the swing
+const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, breakCandles = 3, showGap = true, showRange = true }) => {
     const [view, setView] = useState('both');
     const [hover, setHover] = useState(null);
     const showPrev = view === 'both' && prevCandles.length > 0;
@@ -128,11 +129,11 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ fontSize: 12.5, color: COLORS.text }}>
                     {[
                         { color: COLORS.prevClose, label: 'Previous close', dash: true },
-                        { color: COLORS.range, label: `1st candle range + ${breakCandles}-candle break window`, box: true },
+                        showRange && { color: COLORS.range, label: `1st candle range + ${breakCandles}-candle break window`, box: true },
                         { color: COLORS.entry, label: isBuy ? 'Buy entry' : 'Sell entry' },
                         { color: COLORS.stop, label: 'Stop', dash: true },
                         { color: COLORS.exit, label: 'Exit' },
-                    ].map((item) => (
+                    ].filter(Boolean).map((item) => (
                         <Stack key={item.label} direction="row" spacing={0.75} alignItems="center">
                             <Box
                                 sx={{
@@ -202,7 +203,7 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                     )}
 
                     {/* 1st candle range + break window */}
-                    <rect
+                    {showRange && <rect
                         x={x(dayStart) - slotW / 2}
                         y={y(first.high)}
                         width={x(rangeEndIdx) - x(dayStart) + slotW}
@@ -211,7 +212,7 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                         stroke={COLORS.range}
                         strokeDasharray="4 3"
                         rx="3"
-                    />
+                    />}
 
                     {/* previous close */}
                     {Number.isFinite(Number(signal?.prevClose)) && (
@@ -219,7 +220,7 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                     )}
 
                     {/* gap bracket */}
-                    {Number.isFinite(Number(signal?.prevClose)) && (
+                    {showGap && Number.isFinite(Number(signal?.prevClose)) && (
                         (() => {
                             const gx = showPrev ? x(separatorStart + SEPARATOR_SLOTS / 2 - 0.5) : x(dayStart) - slotW;
                             const y1 = y(signal.prevClose);
