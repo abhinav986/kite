@@ -40,7 +40,6 @@ const STRATEGY_COLORS = { gap: "#2563eb", pullback: "#7c3aed", swing: "#0f766e" 
 
 const statusText = (p) => {
     if (p.strategyKey === "swing") {
-        if (p.provisional) return "buy at today's close";
         return p.status === "closed" ? `sold day 15 (${p.exitDay})` : `holding day ${p.holdDay}/15`;
     }
     if (p.status === "open") return "open · exit by 15:15";

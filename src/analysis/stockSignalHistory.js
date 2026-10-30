@@ -95,7 +95,7 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
         () => [
             { field: 'day', headerName: 'Bought', minWidth: 150, flex: 1, renderCell: (p) => <b>{longDate(p.value)}</b> },
             { field: 'exitDay', headerName: 'Sold (day 15)', minWidth: 140, flex: 1, renderCell: (p) => (p.value ? longDate(p.value) : '—') },
-            { field: 'entry', headerName: 'Buy (close)', width: 115, renderCell: (p) => price(p.value) },
+            { field: 'entry', headerName: 'Buy (burst 3)', width: 115, renderCell: (p) => price(p.value) },
             { field: 'exit', headerName: 'Sell / last', width: 115, renderCell: (p) => price(p.value ?? p.row.lastPrice) },
             {
                 field: 'status',
@@ -277,7 +277,7 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                                     </Stack>
                                     <Typography sx={{ mt: 0.5, fontSize: 13.5, color: '#64748b' }}>
                                         {selected.strategyKey === 'swing'
-                                            ? `3 bursts on ${longDate(selected.day)} · bought at the close ${price(selected.entry)} · ${selected.status === 'open' ? `holding day ${selected.holdDay}/15, last ${price(selected.lastPrice)}` : `sold on ${longDate(selected.exitDay)} at ${price(selected.exit)}`}`
+                                            ? `3 bursts on ${longDate(selected.day)} · bought at burst 3 ${price(selected.entry)} · ${selected.status === 'open' ? `holding day ${selected.holdDay}/15, last ${price(selected.lastPrice)}` : `sold on ${longDate(selected.exitDay)} at ${price(selected.exit)}`}`
                                             : `Gap ${selected.gapPct > 0 ? '+' : ''}${selected.gapPct}% from ${price(selected.prevClose)} · ${selected.side === 'long' ? 'bought' : 'sold'} at ${price(selected.entry)} (${istTime(selected.time)}) · stop ${price(selected.stop)} · ${resultLabel(selected).toLowerCase()} at ${price(selected.exit ?? selected.lastPrice)}`}
                                     </Typography>
                                 </Box>
@@ -297,7 +297,7 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                             {selected.strategyKey === 'swing' ? (
                                 <Stack spacing={2}>
                                     <Box>
-                                        <Typography sx={{ fontWeight: 800, mb: 1 }}>Buy day (5-min): the 3 bursts, bought at the close</Typography>
+                                        <Typography sx={{ fontWeight: 800, mb: 1 }}>Buy day (5-min): the 3 bursts, bought when burst 3 completed</Typography>
                                         <TwoDayChart
                                             prevDay={selected.prevDay}
                                             prevCandles={data.candles[selected.prevDay] || []}

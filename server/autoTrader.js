@@ -150,8 +150,9 @@ function describeStrategies(settings) {
       label: "3-burst swing",
       type: `Swing · hold ${SWING_HOLD_DAYS} days`,
       rules: [
-        "Burst = pullback candle (lower low) → a candle closes above the day high → next 2 candles each break the previous high",
-        `${SWING_BURSTS} bursts in one day → BUY at that day's close (delivery)`,
+        "Burst = pullback (lower lows) → recovery: a candle closes above the day high → next 2 candles each break the previous high",
+        "Pullback may break lows freely; once recovery starts no candle may trade below the previous candle's low until the burst completes (else it is a new pullback)",
+        `BUY when burst ${SWING_BURSTS} completes, at the break of the previous high (delivery)`,
         `Sell at the close of the ${SWING_HOLD_DAYS}th trading day · no stop loss · BUY only`,
         "One holding per stock at a time",
       ],
@@ -736,26 +737,33 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
-  // Burst = pullback candle (lower low) -> a candle closes above the day's high -> the next 2 candles each trade
-  // above the previous candle's high (if not, wait for another close above the day's high). Returns how many
-  // bursts the day had and the candle index where burst number SWING_BURSTS completed.
+  // Burst = pullback (one or more candles making lower lows) -> recovery starts with a candle above the previous
+  // candle's high -> a candle closes above the day's high -> the next 2 candles each trade above the previous
+  // candle's high (if not, wait for another close above the day's high). Inside a recovery leg (from its first
+  // candle until the burst completes) no candle may trade below the previous candle's low; if one does the leg
+  // fails and that candle is a new pullback (bursts already completed stay counted). Returns how many bursts
+  // the day had, the candle index where burst number SWING_BURSTS completed and the buy price there.
   function findBursts(candles) {
     let count = 0;
-    let step = "pullback";
+    let step = "wait"; // wait -> pullback -> close -> hh1 -> hh2
     let dayHigh = candles[0]?.high ?? 0;
     for (let k = 1; k < candles.length; k += 1) {
       const c = candles[k];
       const prev = candles[k - 1];
-      if (step === "pullback") {
-        if (c.low < prev.low) step = "close";
+      if (step === "wait") {
+        if (c.low < prev.low) step = "pullback";
+      } else if (step === "pullback") {
+        if (c.low >= prev.low && c.high > prev.high) step = c.close > dayHigh ? "hh1" : "close";
+      } else if (c.low < prev.low) {
+        step = "pullback";
       } else if (step === "close") {
         if (c.close > dayHigh) step = "hh1";
       } else if (c.high > prev.high) {
         if (step === "hh1") step = "hh2";
         else {
           count += 1;
-          if (count >= SWING_BURSTS) return { count, completedIdx: k };
-          step = "pullback";
+          if (count >= SWING_BURSTS) return { count, completedIdx: k, price: Math.max(c.open, prev.high) };
+          step = "wait";
         }
       } else {
         step = c.close > dayHigh ? "hh1" : "close";
@@ -772,23 +780,22 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     let nextAllowed = 0;
     for (let i = 0; i < sessions.length; i += 1) {
       if (i < nextAllowed) continue;
-      const { completedIdx } = findBursts(sessions[i].candles);
+      const { completedIdx, price } = findBursts(sessions[i].candles);
       if (completedIdx == null) continue;
       const exitIdx = i + SWING_HOLD_DAYS < sessions.length ? i + SWING_HOLD_DAYS : null;
-      trades.push({ entryIdx: i, exitIdx, burstIdx: completedIdx });
+      trades.push({ entryIdx: i, exitIdx, burstIdx: completedIdx, price });
       nextAllowed = i + SWING_HOLD_DAYS;
     }
     return trades;
   }
 
-  // A swing holding as seen on session asOfIdx: bought at the close of the entry day, sold at the close of
-  // day 15 (closed once asOfIdx reaches it). sessionComplete=false means the entry day is still trading, so
-  // the entry is provisional ("buy at today's close").
-  function swingPosition(stock, sessions, trade, asOfIdx, { ltp, sessionComplete = true } = {}) {
+  // A swing holding as seen on session asOfIdx: bought when burst 3 completed on the entry day, sold at the
+  // close of day 15 (closed once asOfIdx reaches it).
+  function swingPosition(stock, sessions, trade, asOfIdx, { ltp } = {}) {
     const { settings } = state;
     const entrySession = sessions[trade.entryIdx];
     const entryCandles = entrySession.candles;
-    const entry = entryCandles[entryCandles.length - 1].close;
+    const entry = trade.price;
     const qty = Math.max(1, Math.floor((state.slotCapital * settings.leverage) / entry));
     const closed = trade.exitIdx != null && trade.exitIdx <= asOfIdx;
     const asOf = sessions[Math.min(asOfIdx, sessions.length - 1)].candles;
@@ -796,7 +803,6 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     const exit = closed ? exitCandles[exitCandles.length - 1].close : null;
     const mark = closed ? exit : ltp ?? asOf[asOf.length - 1].close;
     const holdDay = Math.min(asOfIdx - trade.entryIdx, SWING_HOLD_DAYS);
-    const provisional = trade.entryIdx === asOfIdx && !sessionComplete;
     return {
       id: `${entrySession.day}-${stock.symbol}-SWING`,
       day: sessions[asOfIdx].day,
@@ -808,14 +814,11 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       entry: +entry.toFixed(2),
       stop: null,
       target: null,
-      reason: provisional
-        ? `${SWING_BURSTS} bursts by ${clock(entryCandles[trade.burstIdx].date)} · buy at today's close`
-        : `${SWING_BURSTS} bursts on ${entrySession.day} · hold day ${holdDay}/${SWING_HOLD_DAYS}`,
-      time: entryCandles[entryCandles.length - 1].date,
+      reason: `Burst ${SWING_BURSTS} at ${clock(entryCandles[trade.burstIdx].date)} on ${entrySession.day} · hold day ${holdDay}/${SWING_HOLD_DAYS}`,
+      time: entryCandles[trade.burstIdx].date,
       entryDay: entrySession.day,
       exitDay: trade.exitIdx != null ? sessions[trade.exitIdx].day : null,
       holdDay,
-      provisional,
       status: closed ? "closed" : "open",
       exit: closed ? +exit.toFixed(2) : null,
       exitReason: closed ? "day 15" : undefined,
@@ -916,11 +919,10 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       if (withSwing) {
         const sessions = groupSessions(all);
         const asOfIdx = sessions.length - 1;
-        const sessionComplete = !marketOpen || session.day !== now.dateKey;
         for (const trade of swingTradesFor(sessions)) {
           // held on this day, bought this day, or sold this day
           if (trade.entryIdx > asOfIdx || (trade.exitIdx != null && trade.exitIdx < asOfIdx)) continue;
-          positions.push(swingPosition(stock, sessions, trade, asOfIdx, { ltp: ltps[stock.symbol], sessionComplete }));
+          positions.push(swingPosition(stock, sessions, trade, asOfIdx, { ltp: ltps[stock.symbol] }));
         }
       }
     }
@@ -974,8 +976,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       state.notifiedPaperIds.add(p.id);
       sendAlert(
         [
-          `🟢 SWING BUY ${p.symbol} at today's close (now ${money(p.lastPrice)})`,
-          `${SWING_BURSTS} bursts today · hold ${SWING_HOLD_DAYS} trading days · no stop loss · delivery (CNC)`,
+          `🟢 SWING BUY ${p.symbol} at ${money(p.entry)} (burst ${SWING_BURSTS} at ${clock(p.time)}, now ${money(p.lastPrice)})`,
+          `${SWING_BURSTS} bursts today, no break of the previous low inside a recovery leg · hold ${SWING_HOLD_DAYS} trading days · no stop loss · delivery (CNC)`,
           `Qty for 1/${state.settings.slots} of balance: ${p.qty}`,
         ].join("\n")
       );
@@ -1116,7 +1118,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     const chartCandles = {};
     let gapDays = 0;
     if (strategy === "swing") {
-      // bought at the close of a 3-burst day, sold at the close of day 15 (still held if the data ends first)
+      // bought when burst 3 completes, sold at the close of day 15 (still held if the data ends first)
       const startIdx = sessions.findIndex((s) => s.day >= periodStart);
       for (const trade of swingTradesFor(sessions)) {
         const i = trade.entryIdx;

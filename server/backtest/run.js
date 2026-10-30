@@ -277,8 +277,9 @@ function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, ex
 //
 // One occurrence (5-min candles): a pullback candle (lower low than the candle before it), then a candle
 // CLOSES above the day's high so far, then the next 2 candles each trade above the previous candle's high
-// (if they don't, wait for another close above the day's high). When the 3rd occurrence completes on the
-// same day, BUY at that day's close (delivery) and sell at the close of the 15th trading day after.
+// (if they don't, wait for another close above the day's high). Strict rule: once recovery starts after a
+// pullback, no candle may trade below the previous candle's low until the occurrence completes. When the 3rd
+// occurrence completes, BUY right there (delivery) and sell at the close of the 15th trading day after.
 // No stop loss, LONG only, ₹1,00,000 per trade, one position per stock at a time.
 const HOLD_DAYS = 15;
 const SWING_NOTIONAL = 100000;
@@ -294,42 +295,50 @@ function deliveryCharges(side, value) {
   return stt + exchange + sebi + stamp + gst + dp;
 }
 
-// true when the 5-min candles of one day contain OCCURRENCES_NEEDED complete occurrences
-function hasThreeBursts(candles) {
+// Finds the candle where occurrence number OCCURRENCES_NEEDED completes in one day's 5-min candles.
+// Returns { idx, price } (price = where that candle broke the previous high, or its open if it opened above)
+// or null. strict = inside a recovery leg (from the first candle above the previous high after a pullback
+// until the occurrence completes) no candle may trade below the previous candle's low; if one does the leg
+// fails and that candle is a new pullback. Pullback candles themselves may break lows freely.
+function findBursts(candles, strict) {
   let count = 0;
-  let step = "pullback"; // pullback -> close -> hh1 -> hh2
+  let step = "wait"; // wait -> pullback -> close -> hh1 -> hh2
   let dayHigh = candles[0].high;
   for (let k = 1; k < candles.length; k += 1) {
     const c = candles[k];
     const prev = candles[k - 1];
-    if (step === "pullback") {
-      if (c.low < prev.low) step = "close";
+    if (step === "wait") {
+      if (c.low < prev.low) step = strict ? "pullback" : "close";
+    } else if (step === "pullback") {
+      if (c.low >= prev.low && c.high > prev.high) step = c.close > dayHigh ? "hh1" : "close"; // recovery starts
+    } else if (strict && c.low < prev.low) {
+      step = "pullback"; // broke the previous low inside the leg
     } else if (step === "close") {
       if (c.close > dayHigh) step = "hh1";
-    } else if (step === "hh1" || step === "hh2") {
-      if (c.high > prev.high) {
-        if (step === "hh1") {
-          step = "hh2";
-        } else {
-          count += 1;
-          if (count >= OCCURRENCES_NEEDED) return true;
-          step = "pullback";
-        }
+    } else if (c.high > prev.high) {
+      if (step === "hh1") {
+        step = "hh2";
       } else {
-        step = c.close > dayHigh ? "hh1" : "close"; // no follow-through: this candle may be a new close above
+        count += 1;
+        if (count >= OCCURRENCES_NEEDED) return { idx: k, price: Math.max(c.open, prev.high) };
+        step = "wait";
       }
+    } else {
+      step = c.close > dayHigh ? "hh1" : "close"; // no follow-through: this candle may be a new close above
     }
     dayHigh = Math.max(dayHigh, c.high);
   }
-  return false;
+  return null;
 }
 
-// Buys at the close of day d, sells at the close of day d + HOLD_DAYS. Returns null if the data ends first.
-function holdTrade(symbol, days, d) {
+// Buys on day d (at the 3rd burst when strict, else at the close), sells at the close of day d + HOLD_DAYS.
+// Returns null if the data ends first.
+function holdTrade(symbol, days, d, burst) {
   const exitDay = days[d + HOLD_DAYS];
   if (!exitDay) return null;
   const entryCandles = days[d].candles;
-  const entry = entryCandles[entryCandles.length - 1].close * (1 + SLIPPAGE);
+  const entryCandle = burst ? entryCandles[burst.idx] : entryCandles[entryCandles.length - 1];
+  const entry = (burst ? burst.price : entryCandle.close) * (1 + SLIPPAGE);
   const exit = exitDay.candles[exitDay.candles.length - 1].close * (1 - SLIPPAGE);
   const qty = Math.floor(SWING_NOTIONAL / entry);
   if (qty < 1) return null;
@@ -340,7 +349,7 @@ function holdTrade(symbol, days, d) {
     symbol,
     day: days[d].day,
     exitDay: exitDay.day,
-    time: entryCandles[entryCandles.length - 1].date.toISOString(),
+    time: entryCandle.date.toISOString(),
     side: "long",
     qty,
     entry: +entry.toFixed(2),
@@ -353,13 +362,14 @@ function holdTrade(symbol, days, d) {
   };
 }
 
-function swingTrades(symbol, days) {
+function swingTrades(symbol, days, strict) {
   const out = [];
   let nextAllowed = 0; // one position per stock at a time
   for (let d = 1; d < days.length; d += 1) {
     if (d < nextAllowed) continue;
-    if (!hasThreeBursts(days[d].candles)) continue;
-    const t = holdTrade(symbol, days, d);
+    const burst = findBursts(days[d].candles, strict);
+    if (!burst) continue;
+    const t = holdTrade(symbol, days, d, strict ? burst : null);
     if (!t) break;
     out.push(t);
     nextAllowed = d + HOLD_DAYS;
@@ -455,7 +465,8 @@ function main() {
     { name: "PULLBACK: same, stop at pullback high/low, Nifty check 0.4%", stopAt: "pullback", niftyMax: 0.4 },
   ];
   const swingVariants = [
-    { name: "SWING: 3 bursts (pullback, close above day high, 2 higher highs) in a day -> buy at close, hold 15 days (R = % return)" },
+    { name: "SWING: 3 bursts, no break of previous low inside a recovery leg -> buy at burst 3, hold 15 days (R = % return)", strict: true },
+    { name: "SWING (old rule, for comparison): 3 bursts in a day -> buy at close, hold 15 days (R = % return)", strict: false },
   ];
   const trades = Object.fromEntries([...variants, ...pullbackVariants, ...swingVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
@@ -484,7 +495,7 @@ function main() {
         if (t) trades[v.name].push(t);
       }
     }
-    for (const v of swingVariants) trades[v.name].push(...swingTrades(symbol, days));
+    for (const v of swingVariants) trades[v.name].push(...swingTrades(symbol, days, v.strict));
   }
 
   // midpoint of the tested period, for the 1st-half / 2nd-half check
