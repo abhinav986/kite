@@ -5,6 +5,7 @@
 // the limit) so the two can be compared, with a wider break window (any of the next 3 candles), plus TEST 1
 // (gaps >= 4% only) and TEST 3 (skip when the stock already moved >= 3% the same way yesterday).
 // Also tested: the gap fade with pullback confirmation (see gapPullbackTrade).
+// Also tested: a 15-day swing hold after 3 momentum bursts in one day (see swingTrades), against a baseline.
 // Results go to server/backtest/results.json.
 //
 //   node server/backtest/run.js [--risk 1000] [--slippage 0.02]
@@ -272,6 +273,104 @@ function sizeAndSimulate({ symbol, day, candles, entryIdx, side, entry, stop, ex
   };
 }
 
+// ---------- strategy 3: three momentum bursts in a day -> hold 15 days (delivery) ----------
+//
+// One occurrence (5-min candles): a pullback candle (lower low than the candle before it), then a candle
+// CLOSES above the day's high so far, then the next 2 candles each trade above the previous candle's high
+// (if they don't, wait for another close above the day's high). When the 3rd occurrence completes on the
+// same day, BUY at that day's close (delivery) and sell at the close of the 15th trading day after.
+// No stop loss, LONG only, ₹1,00,000 per trade, one position per stock at a time.
+// The baseline buys the same stock every 15th session and holds 15 days (no pattern), for comparison.
+const HOLD_DAYS = 15;
+const SWING_NOTIONAL = 100000;
+const OCCURRENCES_NEEDED = 3;
+
+function deliveryCharges(side, value) {
+  const stt = value * 0.001; // 0.1% on buy and sell
+  const exchange = value * 0.0000297;
+  const sebi = value * 0.000001;
+  const stamp = side === "buy" ? value * 0.00015 : 0;
+  const gst = 0.18 * (exchange + sebi);
+  const dp = side === "sell" ? 15.93 : 0; // depository charge per stock sold
+  return stt + exchange + sebi + stamp + gst + dp;
+}
+
+// true when the 5-min candles of one day contain OCCURRENCES_NEEDED complete occurrences
+function hasThreeBursts(candles) {
+  let count = 0;
+  let step = "pullback"; // pullback -> close -> hh1 -> hh2
+  let dayHigh = candles[0].high;
+  for (let k = 1; k < candles.length; k += 1) {
+    const c = candles[k];
+    const prev = candles[k - 1];
+    if (step === "pullback") {
+      if (c.low < prev.low) step = "close";
+    } else if (step === "close") {
+      if (c.close > dayHigh) step = "hh1";
+    } else if (step === "hh1" || step === "hh2") {
+      if (c.high > prev.high) {
+        if (step === "hh1") {
+          step = "hh2";
+        } else {
+          count += 1;
+          if (count >= OCCURRENCES_NEEDED) return true;
+          step = "pullback";
+        }
+      } else {
+        step = c.close > dayHigh ? "hh1" : "close"; // no follow-through: this candle may be a new close above
+      }
+    }
+    dayHigh = Math.max(dayHigh, c.high);
+  }
+  return false;
+}
+
+// Buys at the close of day d, sells at the close of day d + HOLD_DAYS. Returns null if the data ends first.
+function holdTrade(symbol, days, d) {
+  const exitDay = days[d + HOLD_DAYS];
+  if (!exitDay) return null;
+  const entryCandles = days[d].candles;
+  const entry = entryCandles[entryCandles.length - 1].close * (1 + SLIPPAGE);
+  const exit = exitDay.candles[exitDay.candles.length - 1].close * (1 - SLIPPAGE);
+  const qty = Math.floor(SWING_NOTIONAL / entry);
+  if (qty < 1) return null;
+  const gross = (exit - entry) * qty;
+  const cost = deliveryCharges("buy", qty * entry) + deliveryCharges("sell", qty * exit);
+  const net = gross - cost;
+  return {
+    symbol,
+    day: days[d].day,
+    exitDay: exitDay.day,
+    time: entryCandles[entryCandles.length - 1].date.toISOString(),
+    side: "long",
+    qty,
+    entry: +entry.toFixed(2),
+    exit: +exit.toFixed(2),
+    reason: "time",
+    gross: +gross.toFixed(2),
+    cost: +cost.toFixed(2),
+    net: +net.toFixed(2),
+    r: +((net / (qty * entry)) * 100).toFixed(3), // % return on the money invested
+  };
+}
+
+function swingTrades(symbol, days, opts) {
+  const out = [];
+  let nextAllowed = 0; // one position per stock at a time
+  // baseline: every 15th session, starting at a per-stock offset so stocks don't all buy the same day
+  const offset = [...symbol].reduce((s, ch) => s + ch.charCodeAt(0), 0) % HOLD_DAYS;
+  for (let d = 1; d < days.length; d += 1) {
+    if (d < nextAllowed) continue;
+    const signal = opts.baseline ? d % HOLD_DAYS === offset : hasThreeBursts(days[d].candles);
+    if (!signal) continue;
+    const t = holdTrade(symbol, days, d);
+    if (!t) break;
+    out.push(t);
+    nextAllowed = d + HOLD_DAYS;
+  }
+  return out;
+}
+
 // ---------- metrics ----------
 
 let SPLIT_DAY = null;
@@ -359,7 +458,11 @@ function main() {
     { name: "PULLBACK: same, stop 1st candle, Nifty check 0.4%", stopAt: "first", niftyMax: 0.4 },
     { name: "PULLBACK: same, stop at pullback high/low, Nifty check 0.4%", stopAt: "pullback", niftyMax: 0.4 },
   ];
-  const trades = Object.fromEntries([...variants, ...pullbackVariants].map((v) => [v.name, []]));
+  const swingVariants = [
+    { name: "SWING: 3 bursts (pullback, close above day high, 2 higher highs) in a day -> buy at close, hold 15 days (R = % return)", baseline: false },
+    { name: "SWING BASELINE: same stocks bought every 15th session, hold 15 days (R = % return)", baseline: true },
+  ];
+  const trades = Object.fromEntries([...variants, ...pullbackVariants, ...swingVariants].map((v) => [v.name, []]));
   const niftyChange = loadNifty();
   let firstDay = null;
   let lastDay = null;
@@ -386,6 +489,7 @@ function main() {
         if (t) trades[v.name].push(t);
       }
     }
+    for (const v of swingVariants) trades[v.name].push(...swingTrades(symbol, days, v));
   }
 
   // midpoint of the tested period, for the 1st-half / 2nd-half check
