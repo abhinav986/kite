@@ -299,7 +299,7 @@ function deliveryCharges(side, value) {
 // Returns { idx, price } (price = where that candle broke the previous high, or its open if it opened above)
 // or null. strict = inside a recovery leg (from the first candle above the previous high after a pullback
 // until the occurrence completes) no candle may trade below the previous candle's low; if one does the leg
-// fails and that candle is a new pullback. Pullback candles themselves may break lows freely.
+// fails, that candle is a new pullback and the count resets to 0. Pullback candles themselves may break lows freely.
 function findBursts(candles, strict) {
   let count = 0;
   let step = "wait"; // wait -> pullback -> close -> hh1 -> hh2
@@ -312,7 +312,8 @@ function findBursts(candles, strict) {
     } else if (step === "pullback") {
       if (c.low >= prev.low && c.high > prev.high) step = c.close > dayHigh ? "hh1" : "close"; // recovery starts
     } else if (strict && c.low < prev.low) {
-      step = "pullback"; // broke the previous low inside the leg
+      step = "pullback"; // broke the previous low inside the leg: start counting again
+      count = 0;
     } else if (step === "close") {
       if (c.close > dayHigh) step = "hh1";
     } else if (c.high > prev.high) {
@@ -465,7 +466,7 @@ function main() {
     { name: "PULLBACK: same, stop at pullback high/low, Nifty check 0.4%", stopAt: "pullback", niftyMax: 0.4 },
   ];
   const swingVariants = [
-    { name: "SWING: 3 bursts, no break of previous low inside a recovery leg -> buy at burst 3, hold 15 days (R = % return)", strict: true },
+    { name: "SWING: 3 bursts, no break of previous low inside a recovery leg (else count resets to 0) -> buy at burst 3, hold 15 days (R = % return)", strict: true },
     { name: "SWING (old rule, for comparison): 3 bursts in a day -> buy at close, hold 15 days (R = % return)", strict: false },
   ];
   const trades = Object.fromEntries([...variants, ...pullbackVariants, ...swingVariants].map((v) => [v.name, []]));

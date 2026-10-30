@@ -151,7 +151,7 @@ function describeStrategies(settings) {
       type: `Swing · hold ${SWING_HOLD_DAYS} days`,
       rules: [
         "Burst = pullback (lower lows) → recovery: a candle closes above the day high → next 2 candles each break the previous high",
-        "Pullback may break lows freely; once recovery starts no candle may trade below the previous candle's low until the burst completes (else it is a new pullback)",
+        "Pullback may break lows freely; once recovery starts no candle may trade below the previous candle's low until the burst completes (else it is a new pullback and the burst count resets to 0)",
         `BUY when burst ${SWING_BURSTS} completes, at the break of the previous high (delivery)`,
         `Sell at the close of the ${SWING_HOLD_DAYS}th trading day · no stop loss · BUY only`,
         "One holding per stock at a time",
@@ -741,7 +741,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   // candle's high -> a candle closes above the day's high -> the next 2 candles each trade above the previous
   // candle's high (if not, wait for another close above the day's high). Inside a recovery leg (from its first
   // candle until the burst completes) no candle may trade below the previous candle's low; if one does the leg
-  // fails and that candle is a new pullback (bursts already completed stay counted). Returns how many bursts
+  // fails, that candle is a new pullback and the burst count starts again from 0. Returns how many bursts
   // the day had, the candle index where burst number SWING_BURSTS completed and the buy price there.
   function findBursts(candles) {
     let count = 0;
@@ -756,6 +756,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         if (c.low >= prev.low && c.high > prev.high) step = c.close > dayHigh ? "hh1" : "close";
       } else if (c.low < prev.low) {
         step = "pullback";
+        count = 0;
       } else if (step === "close") {
         if (c.close > dayHigh) step = "hh1";
       } else if (c.high > prev.high) {
