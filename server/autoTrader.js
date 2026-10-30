@@ -136,6 +136,8 @@ function describeStrategies(settings) {
         "Recovery starts at the first candle beyond the previous candle's high (BUY) / low (SELL)",
         "From then until B1 completes no candle may break the previous candle's low (BUY) / high (SELL), else the leg fails and it is a new pullback",
         "B1: a candle closes above the day high (BUY) / below the day low (SELL), then the next 2 candles each break the previous high / low → enter there",
+        "Engulf check: after a red candle (BUY) / green candle (SELL), if 1 or more candles first break its low and then its high (SELL: high then low), their lowest low (SELL: highest high) must not break before B1, else no trade on that side today",
+        "A 1-candle engulf is not a pullback — B1 needs a separate pullback after it",
         "Entries until 14:30 · one trade per stock per day",
         "Cancelled if the 9:15 candle's other end trades before the entry · stop there · exit 15:15",
       ],
@@ -635,39 +637,63 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     };
   }
 
-  // Burst 1 against the gap, from candle index `from` on (gap-up / short shown; long is the mirror):
-  // pullback = a candle with a higher high than the one before -> the leg starts with a candle below the previous
-  // low that does not trade above the previous high -> a candle closes below the day's low -> the next 2 candles
-  // each make a lower low = B1. Inside the leg no candle may trade above the previous candle's high (else it is
-  // a new pullback). Cancelled if `stop` trades or the last entry time passes first. Returns { idx, price } or null.
+  // Burst 1 against the 9:15 break, from candle index `from` on (BUY shown; SELL is the mirror):
+  // pullback = a candle with a lower low than the one before (one or more) -> the leg starts with a candle above the
+  // previous high whose low holds -> a candle closes above the day's high -> the next 2 candles each make a higher
+  // high = B1. Inside the leg no candle may trade below the previous candle's low (else it is a new pullback).
+  // Engulf check: after a red candle R, if one or more candles first trade below R's low and then above R's high,
+  // their lowest low must not break before B1 (else no trade on this side today); a 1-candle engulf is not a
+  // pullback. Cancelled if `stop` trades or the last entry time passes first. Returns { idx, price } or null.
   function findGapBurst(candles, from, short, stop) {
     // mirror a short setup so the same "up-burst" logic works for both sides
     const m = short ? (c) => ({ high: -c.low, low: -c.high, close: -c.close, open: -c.open }) : (c) => c;
     let step = "wait"; // wait -> pullback -> close -> e1 -> e2
-    let extreme = -Infinity;
-    for (let k = 0; k < from; k += 1) extreme = Math.max(extreme, m(candles[k]).high);
-    for (let k = from; k < candles.length; k += 1) {
+    let extreme = m(candles[0]).high;
+    let floor = -Infinity; // highest engulf low so far: no candle may trade below it before B1
+    let open = []; // engulf candidates: { r, rHigh, rLow, brokeLow, groupLow }
+    for (let k = 1; k < candles.length; k += 1) {
       const raw = candles[k];
-      if (candleMinute(raw) > state.settings.lastEntry) return null;
-      if (short ? raw.high > stop : raw.low < stop) return null;
       const c = m(raw);
       const prev = m(candles[k - 1]);
-      if (step === "wait") {
-        if (c.low < prev.low) step = "pullback";
-      } else if (step === "pullback") {
-        if (c.low >= prev.low && c.high > prev.high) step = c.close > extreme ? "e1" : "close";
-      } else if (c.low < prev.low) {
-        step = "pullback";
-      } else if (step === "close") {
-        if (c.close > extreme) step = "e1";
-      } else if (c.high > prev.high) {
-        if (step === "e1") step = "e2";
-        else {
-          const price = Math.max(c.open, prev.high);
-          return { idx: k, price: short ? -price : price };
+      if (k >= from) {
+        if (candleMinute(raw) > state.settings.lastEntry) return null;
+        if (short ? raw.high > stop : raw.low < stop) return null;
+      }
+      if (c.low < floor) return null; // an engulf level broke before B1: no trade on this side today
+
+      // engulf: after a red candle R, one or more candles first trade below R's low, then above R's high
+      let oneCandleEngulf = false;
+      open = open.filter((e) => {
+        e.groupLow = Math.min(e.groupLow, c.low);
+        if (!e.brokeLow && c.high > e.rHigh && !(c.low < e.rLow)) return false; // R's high went first
+        if (c.low < e.rLow) e.brokeLow = true;
+        if (e.brokeLow && c.high > e.rHigh) {
+          floor = Math.max(floor, e.groupLow);
+          if (e.r === k - 1) oneCandleEngulf = true;
+          return false;
         }
-      } else {
-        step = c.close > extreme ? "e1" : "close";
+        return true;
+      });
+      if (c.close < c.open) open.push({ r: k, rHigh: c.high, rLow: c.low, brokeLow: false, groupLow: Infinity });
+
+      if (k >= from) {
+        if (step === "wait") {
+          if (c.low < prev.low && !oneCandleEngulf) step = "pullback"; // a 1-candle engulf is not a pullback
+        } else if (step === "pullback") {
+          if (c.low >= prev.low && c.high > prev.high) step = c.close > extreme ? "e1" : "close";
+        } else if (c.low < prev.low) {
+          step = oneCandleEngulf ? "wait" : "pullback";
+        } else if (step === "close") {
+          if (c.close > extreme) step = "e1";
+        } else if (c.high > prev.high) {
+          if (step === "e1") step = "e2";
+          else {
+            const price = Math.max(c.open, prev.high);
+            return { idx: k, price: short ? -price : price };
+          }
+        } else {
+          step = c.close > extreme ? "e1" : "close";
+        }
       }
       extreme = Math.max(extreme, c.high);
     }
