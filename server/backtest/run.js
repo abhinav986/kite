@@ -113,6 +113,7 @@ function simulate({ candles, entryIdx, side, stop }) {
 //                       A candle that crosses the other side of the 1st candle first cancels the setup.
 // opts.niftyMax:        skip when Nifty moves with the gap by more than this % (null = no check)
 // opts.skipPrevMovePct: skip when the stock already moved this much yesterday in the gap's direction
+// opts.b1:              after the break, wait for burst 1 against the gap (see findGapBurst) and enter there
 function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyChange }, opts) {
   const c1 = candles[0];
   const gapPct = ((c1.open - prevClose) / prevClose) * 100;
@@ -141,9 +142,15 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
     if (short ? c.high > stop : c.low < stop) return null;
   }
   if (entryIdx == null) return null;
-  const breakCandle = candles[entryIdx];
   // a candle that opens beyond the level fills at its open
-  const entry = short ? Math.min(level, breakCandle.open) : Math.max(level, breakCandle.open);
+  let entry = short ? Math.min(level, candles[entryIdx].open) : Math.max(level, candles[entryIdx].open);
+  if (opts.b1) {
+    const burst = findGapBurst(candles, entryIdx + 1, short, stop, PULLBACK_LAST_ENTRY_MINUTE);
+    if (!burst) return null;
+    entryIdx = burst.idx;
+    entry = burst.price;
+  }
+  const breakCandle = candles[entryIdx];
 
   // Nifty filter, measured at the close of the breakout candle
   let nifty = null;
@@ -182,6 +189,45 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
     net: +(gross - cost).toFixed(2),
     r: +((gross - cost) / (riskPerShare * qty)).toFixed(3),
   };
+}
+
+// Burst 1 against the gap, from candle index `from` on (gap-up / short shown; long is the mirror):
+// pullback = a candle with a higher high than the one before -> the leg starts with a candle below the previous
+// low that does not trade above the previous high -> a candle closes below the day's low -> the next 2 candles
+// each make a lower low = B1. Inside the leg no candle may trade above the previous candle's high (else it is a
+// new pullback). Cancelled if `stop` trades or the cutoff passes first. Returns { idx, price } or null.
+function findGapBurst(candles, from, short, stop, lastEntryMinute) {
+  // mirror a short setup so the same "up-burst" logic works for both sides
+  const m = short ? (c) => ({ high: -c.low, low: -c.high, close: -c.close, open: -c.open }) : (c) => c;
+  let step = "wait"; // wait -> pullback -> close -> e1 -> e2
+  let extreme = -Infinity;
+  for (let k = 0; k < from; k += 1) extreme = Math.max(extreme, m(candles[k]).high);
+  for (let k = from; k < candles.length; k += 1) {
+    const raw = candles[k];
+    if (raw.minute > lastEntryMinute) return null;
+    if (short ? raw.high > stop : raw.low < stop) return null;
+    const c = m(raw);
+    const prev = m(candles[k - 1]);
+    if (step === "wait") {
+      if (c.low < prev.low) step = "pullback";
+    } else if (step === "pullback") {
+      if (c.low >= prev.low && c.high > prev.high) step = c.close > extreme ? "e1" : "close";
+    } else if (c.low < prev.low) {
+      step = "pullback";
+    } else if (step === "close") {
+      if (c.close > extreme) step = "e1";
+    } else if (c.high > prev.high) {
+      if (step === "e1") step = "e2";
+      else {
+        const price = Math.max(c.open, prev.high);
+        return { idx: k, price: short ? -price : price };
+      }
+    } else {
+      step = c.close > extreme ? "e1" : "close";
+    }
+    extreme = Math.max(extreme, c.high);
+  }
+  return null;
 }
 
 // ---------- strategy 2: gap fade with pullback confirmation ----------
@@ -445,13 +491,16 @@ function main() {
     .filter((f) => !wanted || wanted.has(f.replace(/\.json$/, "")));
 
   const variants = [
-    { name: "Gap >= 1% fade, NO Nifty check (paper signals)", niftyMax: null },
+    { name: "Gap >= 1% fade, NO Nifty check", niftyMax: null },
     { name: "Gap >= 1% fade, Nifty check 0.4%", niftyMax: 0.4 },
     { name: "Gap >= 1% fade, Nifty check 0.2%", niftyMax: 0.2 },
     // break by any of the next 3 candles (9:20, 9:25, 9:30) instead of only 9:20
     { name: "Gap >= 1% fade, break within 3 candles, NO Nifty check", niftyMax: null, breakCandles: 3 },
     { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3 },
     { name: "Gap >= 1% fade, break within 3 candles, Nifty check 0.2%", niftyMax: 0.2, breakCandles: 3 },
+    // after the break, enter only when burst 1 against the gap completes (paper signals)
+    { name: "Gap >= 1% fade, break within 3 candles, then B1 -> entry at B1, NO Nifty check (paper signals)", niftyMax: null, breakCandles: 3, b1: true },
+    { name: "Gap >= 1% fade, break within 3 candles, then B1 -> entry at B1, Nifty check 0.4%", niftyMax: 0.4, breakCandles: 3, b1: true },
     // Test 1: only big gaps
     { name: "TEST 1: Gap >= 4% fade, Nifty check 0.4%", minGap: 4, niftyMax: 0.4 },
     { name: "TEST 1: Gap >= 4% fade, NO Nifty check (reference)", minGap: 4, niftyMax: null },
