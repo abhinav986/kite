@@ -46,10 +46,35 @@ const spreadLabels = (labels, minGap, top, bottom) => {
     return sorted;
 };
 
-// showGap / showRange: draw the gap badge and the 1st-candle range (gap strategies); off for the swing
-const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, breakCandles = 3, showGap = true, showRange = true }) => {
+// showGap / showRange: draw the gap badge and the 1st-candle range (gap strategies); off for the swing.
+// nextDay / nextCandles: the session after the signal day, shown by the "Next day" view with the signal day's
+// close and the entry level as reference lines.
+const TwoDayChart = ({
+    prevDay,
+    prevCandles = [],
+    day: signalDay,
+    dayCandles: signalCandles = [],
+    nextDay,
+    nextCandles = [],
+    signal: signalProp,
+    breakCandles = 3,
+    showGap: gapProp = true,
+    showRange: rangeProp = true,
+}) => {
     const [view, setView] = useState('both');
     const [hover, setHover] = useState(null);
+    const nextView = view === 'next';
+    const day = nextView ? nextDay : signalDay;
+    const dayCandles = nextView ? nextCandles : signalCandles;
+    const signal = useMemo(
+        () =>
+            nextView
+                ? { side: signalProp?.side, entry: signalProp?.entry, prevClose: signalCandles[signalCandles.length - 1]?.close }
+                : signalProp,
+        [nextView, signalProp, signalCandles]
+    );
+    const showGap = gapProp && !nextView;
+    const showRange = rangeProp && !nextView;
     const showPrev = view === 'both' && prevCandles.length > 0;
 
     const layout = useMemo(() => {
@@ -111,7 +136,7 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
     // right-axis level pills
     const pills = spreadLabels(
         [
-            Number.isFinite(Number(signal?.prevClose)) && { key: 'prev', y: y(signal.prevClose), text: `Prev ${fmt(signal.prevClose)}`, color: COLORS.prevClose },
+            Number.isFinite(Number(signal?.prevClose)) && { key: 'prev', y: y(signal.prevClose), text: `${nextView ? 'Close' : 'Prev'} ${fmt(signal.prevClose)}`, color: COLORS.prevClose },
             signal?.stop != null && { key: 'stop', y: y(signal.stop), text: `Stop ${fmt(signal.stop)}`, color: COLORS.stop },
             signal && { key: 'entry', y: y(signal.entry), text: `${isBuy ? 'Buy' : 'Sell'} ${fmt(signal.entry)}`, color: COLORS.entry },
             Number.isFinite(Number(exitPrice)) && { key: 'exit', y: y(exitPrice), text: `${signal?.closedAt ? 'Exit' : 'Last'} ${fmt(exitPrice)}`, color: COLORS.exit },
@@ -128,11 +153,11 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mb: 1.5 }}>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ fontSize: 12.5, color: COLORS.text }}>
                     {[
-                        { color: COLORS.prevClose, label: 'Previous close', dash: true },
+                        { color: COLORS.prevClose, label: nextView ? 'Signal-day close' : 'Previous close', dash: true },
                         showRange && { color: COLORS.range, label: `1st candle range + ${breakCandles}-candle break window`, box: true },
                         { color: COLORS.entry, label: isBuy ? 'Buy entry' : 'Sell entry' },
-                        { color: COLORS.stop, label: 'Stop', dash: true },
-                        { color: COLORS.exit, label: 'Exit' },
+                        !nextView && { color: COLORS.stop, label: 'Stop', dash: true },
+                        !nextView && { color: COLORS.exit, label: 'Exit' },
                     ].filter(Boolean).map((item) => (
                         <Stack key={item.label} direction="row" spacing={0.75} alignItems="center">
                             <Box
@@ -156,6 +181,9 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                     <ToggleButton value="day" sx={{ textTransform: 'none', fontWeight: 700, px: 1.5 }}>
                         Signal day
                     </ToggleButton>
+                    <ToggleButton value="next" disabled={!nextCandles.length} sx={{ textTransform: 'none', fontWeight: 700, px: 1.5 }}>
+                        Next day
+                    </ToggleButton>
                 </ToggleButtonGroup>
             </Stack>
 
@@ -177,7 +205,7 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                         </text>
                     )}
                     <text x={(x(dayStart) + plotRight) / 2} y={PAD.top - 16} textAnchor="middle" fontSize="13" fontWeight="800" fill={COLORS.ink}>
-                        {dayLabel(day)} · signal day
+                        {dayLabel(day)} · {nextView ? 'next day' : 'signal day'}
                     </text>
 
                     {/* price grid */}
@@ -217,6 +245,11 @@ const TwoDayChart = ({ prevDay, prevCandles = [], day, dayCandles = [], signal, 
                     {/* previous close */}
                     {Number.isFinite(Number(signal?.prevClose)) && (
                         <line x1={PAD.left} x2={plotRight} y1={y(signal.prevClose)} y2={y(signal.prevClose)} stroke={COLORS.prevClose} strokeDasharray="6 5" strokeWidth="1.4" />
+                    )}
+
+                    {/* next-day view: the signal's entry level for reference */}
+                    {nextView && Number.isFinite(Number(signal?.entry)) && (
+                        <line x1={PAD.left} x2={plotRight} y1={y(signal.entry)} y2={y(signal.entry)} stroke={COLORS.entry} strokeDasharray="6 5" strokeWidth="1.4" />
                     )}
 
                     {/* gap bracket */}

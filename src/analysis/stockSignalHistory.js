@@ -297,6 +297,8 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                                             prevCandles={data.candles[selected.prevDay] || []}
                                             day={selected.day}
                                             dayCandles={data.candles[selected.day] || []}
+                                            nextDay={selected.nextDay}
+                                            nextCandles={(selected.nextDay && data.candles[selected.nextDay]) || []}
                                             signal={{ ...selected, stop: null, exit: null, lastPrice: null, closedAt: null }}
                                             showGap={false}
                                             showRange={false}
@@ -313,6 +315,8 @@ const StockSignalHistory = ({ instrumentToken, stockName, onClose }) => {
                                     prevCandles={data.candles[selected.prevDay] || []}
                                     day={selected.day}
                                     dayCandles={data.candles[selected.day] || []}
+                                    nextDay={selected.nextDay}
+                                    nextCandles={(selected.nextDay && data.candles[selected.nextDay]) || []}
                                     signal={selected}
                                     breakCandles={rules?.breakCandles ?? 3}
                                 />
