@@ -1,6 +1,7 @@
 import { Box, Typography } from '@mui/material';
 
-// Daily candles of a swing holding: from the buy day (day 0) to the sell day (day 15) or the latest day.
+// Daily candles from the signal / buy day (day 0) over the next holdDays sessions (or up to the latest day):
+// the swing holding, or the 30 days after an intraday signal.
 const W = 1100;
 const H = 300;
 const PAD = { top: 26, right: 110, bottom: 34, left: 14 };
@@ -8,9 +9,9 @@ const PAD = { top: 26, right: 110, bottom: 34, left: 14 };
 const shortDay = (day) =>
     new Date(`${day}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
-const DailyHoldChart = ({ bars = [], entry, exit, holdDays = 15 }) => {
+const DailyHoldChart = ({ bars = [], entry, exit, holdDays = 15, entryLabel = 'Buy', firstLabel = 'buy', emptyText = 'The hold has only just started; no daily candles yet.' }) => {
     if (bars.length < 2) {
-        return <Typography sx={{ color: '#64748b', fontSize: 14 }}>The hold has only just started; no daily candles yet.</Typography>;
+        return <Typography sx={{ color: '#64748b', fontSize: 14 }}>{emptyText}</Typography>;
     }
     const levels = [entry, exit].filter((v) => Number.isFinite(Number(v)));
     const prices = [...bars.flatMap((b) => [b.high, b.low]), ...levels];
@@ -36,10 +37,10 @@ const DailyHoldChart = ({ bars = [], entry, exit, holdDays = 15 }) => {
 
     return (
         <Box sx={{ width: '100%', overflowX: 'auto', borderRadius: 3, border: '1px solid rgba(15,23,42,0.08)', background: '#fff' }}>
-            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: 760, height: 'auto', display: 'block' }} role="img" aria-label="Daily candles during the swing hold">
+            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: 760, height: 'auto', display: 'block' }} role="img" aria-label="Daily candles after the signal">
                 <rect x={PAD.left} y={PAD.top - 8} width={x(holdDays) + slotW / 2 - PAD.left} height={H - PAD.top - PAD.bottom + 8} fill="#0f766e0d" />
                 <line x1={PAD.left} x2={W - PAD.right} y1={y(entry)} y2={y(entry)} stroke="#2563eb" strokeWidth="1.6" strokeDasharray="6 4" />
-                {pill(entry, `Buy ${Number(entry).toFixed(2)}`, '#2563eb')}
+                {pill(entry, `${entryLabel} ${Number(entry).toFixed(2)}`, '#2563eb')}
                 {Number.isFinite(Number(exit)) ? (
                     <>
                         <line x1={x(bars.length - 1)} x2={W - PAD.right} y1={y(exit)} y2={y(exit)} stroke="#7c3aed" strokeWidth="2" />
@@ -56,7 +57,7 @@ const DailyHoldChart = ({ bars = [], entry, exit, holdDays = 15 }) => {
                             <line x1={x(i)} x2={x(i)} y1={y(b.high)} y2={y(b.low)} stroke={color} strokeWidth="1.6" />
                             <rect x={x(i) - bodyW / 2} y={y(Math.max(b.open, b.close))} width={bodyW} height={Math.max(1.5, Math.abs(y(b.open) - y(b.close)))} fill={color} rx="1.5" />
                             <text x={x(i)} y={H - 18} textAnchor="middle" fontSize="10.5" fill="#64748b">
-                                {i === 0 ? 'buy' : `d${i}`}
+                                {i === 0 ? firstLabel : `d${i}`}
                             </text>
                             <text x={x(i)} y={H - 6} textAnchor="middle" fontSize="9.5" fill="#94a3b8">
                                 {shortDay(b.day)}

@@ -1157,6 +1157,16 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     const signals = [];
     const chartCandles = {};
     let gapDays = 0;
+    const dailyBar = (s) => ({
+      day: s.day,
+      open: s.candles[0].open,
+      high: Math.max(...s.candles.map((c) => c.high)),
+      low: Math.min(...s.candles.map((c) => c.low)),
+      close: s.candles[s.candles.length - 1].close,
+    });
+    // the signal day plus up to the next NEXT_DAYS sessions as daily bars, for the chart's "Next 30 days" view
+    const NEXT_DAYS = 30;
+    const nextDailyFrom = (i) => sessions.slice(i, i + NEXT_DAYS + 1).map(dailyBar);
     if (strategy === "swing") {
       // bought when burst 3 completes, sold at the close of day 15 (still held if the data ends first)
       const startIdx = sessions.findIndex((s) => s.day >= periodStart);
@@ -1166,19 +1176,11 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         const p = swingPosition(stock, sessions, trade, sessions.length - 1);
         const prev = sessions[i - 1].candles;
         const prevClose = prev[prev.length - 1].close;
-        const holdDaily = sessions.slice(i, (trade.exitIdx ?? sessions.length - 1) + 1).map((s) => ({
-          day: s.day,
-          open: s.candles[0].open,
-          high: Math.max(...s.candles.map((c) => c.high)),
-          low: Math.min(...s.candles.map((c) => c.low)),
-          close: s.candles[s.candles.length - 1].close,
-        }));
+        const holdDaily = sessions.slice(i, (trade.exitIdx ?? sessions.length - 1) + 1).map(dailyBar);
         const dayChange = ((sessions[i].candles[0].open - prevClose) / prevClose) * 100;
-        const next = sessions[i + 1];
-        signals.push({ ...p, day: p.entryDay, prevDay: sessions[i - 1].day, nextDay: next?.day ?? null, prevClose, gapPct: +dayChange.toFixed(2), points: +(p.lastPrice - p.entry).toFixed(2), r: p.returnPct, holdDaily });
+        signals.push({ ...p, day: p.entryDay, prevDay: sessions[i - 1].day, prevClose, gapPct: +dayChange.toFixed(2), points: +(p.lastPrice - p.entry).toFixed(2), r: p.returnPct, holdDaily, nextDaily: nextDailyFrom(i) });
         chartCandles[sessions[i].day] = sessions[i].candles;
         chartCandles[sessions[i - 1].day] = prev;
-        if (next) chartCandles[next.day] = next.candles;
       }
     }
     for (let i = 1; strategy !== "swing" && i < sessions.length; i += 1) {
@@ -1196,12 +1198,9 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       const exitPrice = p.exit ?? p.lastPrice;
       const points = p.side === "long" ? exitPrice - p.entry : p.entry - exitPrice;
       const r = p.stop != null && p.entry !== p.stop ? +(points / Math.abs(p.entry - p.stop)).toFixed(2) : null;
-      // the session after the signal day, for the chart's "Next day" view
-      const next = sessions[i + 1];
-      signals.push({ ...p, prevDay: sessions[i - 1].day, nextDay: next?.day ?? null, prevClose, gapPct: +gapPct.toFixed(2), points: +points.toFixed(2), r });
+      signals.push({ ...p, prevDay: sessions[i - 1].day, prevClose, gapPct: +gapPct.toFixed(2), points: +points.toFixed(2), r, nextDaily: nextDailyFrom(i) });
       chartCandles[day] = candles;
       chartCandles[sessions[i - 1].day] = prev;
-      if (next) chartCandles[next.day] = next.candles;
     }
 
     const closed = signals.filter((p) => p.status === "closed");
