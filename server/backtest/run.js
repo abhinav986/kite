@@ -194,7 +194,8 @@ function gapFadeTrade({ symbol, day, candles, prevClose, prevDayChange, niftyCha
 
 // B2 after the 9:15 break, from candle index `from` on (BUY shown; SELL is the mirror): a pullback (a lower low
 // after a new day high; a 1-candle engulf is not one) -> 3 candles in a row close above the day high so far = B1
-// (a candle that doesn't restarts the count; lower lows alone don't matter) -> another pullback -> 3 more closes
+// (the pullback candle counts too if it closes above it; a candle that doesn't restarts the count; lower lows
+// alone don't matter) -> another pullback -> 3 more closes
 // above the day high = B2 -> enter at the 3rd candle's close. Engulf check: after a red candle R, if one or more
 // candles first trade below R's low and then above R's high, their lowest low must not break before the entry
 // (else no trade on this side today). Cancelled if `stop` trades or the last entry time passes first.
@@ -239,7 +240,7 @@ function findGapBurst(candles, from, short, stop, lastEntryMinute) {
         // a pullback counts only after a new day high, and a 1-candle engulf is not a pullback
         if (c.low < prev.low && newHigh && !oneCandleEngulf) {
           step = "count";
-          closes = 0;
+          closes = c.close > extreme ? 1 : 0; // the pullback candle itself counts if it closes above the day high
           newHigh = false;
         }
       } else if (c.close > extreme) {
