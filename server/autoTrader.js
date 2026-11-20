@@ -133,8 +133,8 @@ function describeStrategies(settings) {
         "Every F&O stock, every day — no gap check, both sides",
         `A candle breaks the 9:15 candle's low before ${window} → look for SELL (breaks its high → BUY)`,
         "Pullback: a lower low (BUY) / higher high (SELL) after a new day high / low — a 1-candle engulf is not a pullback",
-        "B1: after the first pullback, 3 candles close above the day high (BUY) / below the day low (SELL); need not be back-to-back, a lower low (SELL: higher high) meanwhile does not reset",
-        "Then another pullback and 3 more such closes = B2 → enter at the 3rd candle's close",
+        "B1: after the first pullback, 3 candles in a row close above the day high (BUY) / below the day low (SELL); a candle that doesn't restarts the count",
+        "Then another pullback and 3 more such closes in a row = B2 → enter at the 3rd candle's close",
         "Engulf check: after a red candle (BUY) / green candle (SELL), if 1 or more candles first break its low and then its high (SELL: high then low), their lowest low (SELL: highest high) must not break before the entry, else no trade on that side today",
         "Entries until 14:30 · one trade per stock per day",
         "Cancelled if the 9:15 candle's other end trades before the entry · stop there · exit 15:15",
@@ -636,8 +636,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
   }
 
   // B2 after the 9:15 break, from candle index `from` on (BUY shown; SELL is the mirror): a pullback (a lower low
-  // after a new day high; a 1-candle engulf is not one) -> 3 candles close above the day high so far = B1 (not
-  // necessarily back-to-back; a lower low while counting does not reset it) -> another pullback -> 3 more closes
+  // after a new day high; a 1-candle engulf is not one) -> 3 candles in a row close above the day high so far = B1
+  // (a candle that doesn't restarts the count; lower lows alone don't matter) -> another pullback -> 3 more closes
   // above the day high = B2 -> enter at the 3rd candle's close. Engulf check: after a red candle R, if one or more
   // candles first trade below R's low and then above R's high, their lowest low must not break before the entry
   // (else no trade on this side today). Cancelled if `stop` trades or the last entry time passes first.
@@ -692,6 +692,8 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
             if (bursts === 2) return { idx: k, price: short ? -c.close : c.close };
             step = "wait";
           }
+        } else {
+          closes = 0; // the 3 closes must be back-to-back
         }
       }
       if (c.high > extreme) newHigh = true;
