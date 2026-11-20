@@ -127,18 +127,15 @@ function describeStrategies(settings) {
   const window = clockLabel(breakWindowEnd(settings));
   return {
     gap: {
-      label: "9:15 break + B1",
+      label: "9:15 break + B2",
       type: "Intraday",
       rules: [
         "Every F&O stock, every day — no gap check, both sides",
         `A candle breaks the 9:15 candle's low before ${window} → look for SELL (breaks its high → BUY)`,
-        "Pullback: one or more candles against the trade (BUY: lower lows · SELL: higher highs) — any number allowed",
-        "Recovery starts at the first candle beyond the previous candle's high (BUY) / low (SELL)",
-        "From then until B1 completes no candle may break the previous candle's low (BUY) / high (SELL), else the leg fails and it is a new pullback",
-        "B1: a candle closes above the day high (BUY) / below the day low (SELL), then the next 2 candles each break the previous high / low → enter there",
-        "Engulf check: after a red candle (BUY) / green candle (SELL), if 1 or more candles first break its low and then its high (SELL: high then low), their lowest low (SELL: highest high) must not break before B1, else no trade on that side today",
-        "A 1-candle engulf is not a pullback — B1 needs a separate pullback after it",
-        "A pullback counts only after a new day high (BUY) / day low (SELL) since the last pullback; a failed leg without one is not a pullback",
+        "Pullback: a lower low (BUY) / higher high (SELL) after a new day high / low — a 1-candle engulf is not a pullback",
+        "B1: after the first pullback, 3 candles close above the day high (BUY) / below the day low (SELL); need not be back-to-back, a lower low (SELL: higher high) meanwhile does not reset",
+        "Then another pullback and 3 more such closes = B2 → enter at the 3rd candle's close",
+        "Engulf check: after a red candle (BUY) / green candle (SELL), if 1 or more candles first break its low and then its high (SELL: high then low), their lowest low (SELL: highest high) must not break before the entry, else no trade on that side today",
         "Entries until 14:30 · one trade per stock per day",
         "Cancelled if the 9:15 candle's other end trades before the entry · stop there · exit 15:15",
       ],
@@ -638,23 +635,23 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     };
   }
 
-  // Burst 1 against the 9:15 break, from candle index `from` on (BUY shown; SELL is the mirror):
-  // pullback = a candle with a lower low than the one before (one or more) -> the leg starts with a candle above the
-  // previous high whose low holds -> a candle closes above the day's high -> the next 2 candles each make a higher
-  // high = B1. Inside the leg no candle may trade below the previous candle's low (else it is a new pullback).
-  // Engulf check: after a red candle R, if one or more candles first trade below R's low and then above R's high,
-  // their lowest low must not break before B1 (else no trade on this side today); a 1-candle engulf is not a
-  // pullback. A lower low counts as a pullback only after a candle has traded above the day high since the last
-  // pullback (a failed leg without a new day high just waits for one). Cancelled if `stop` trades or the last
-  // entry time passes first. Returns { idx, price } or null.
+  // B2 after the 9:15 break, from candle index `from` on (BUY shown; SELL is the mirror): a pullback (a lower low
+  // after a new day high; a 1-candle engulf is not one) -> 3 candles close above the day high so far = B1 (not
+  // necessarily back-to-back; a lower low while counting does not reset it) -> another pullback -> 3 more closes
+  // above the day high = B2 -> enter at the 3rd candle's close. Engulf check: after a red candle R, if one or more
+  // candles first trade below R's low and then above R's high, their lowest low must not break before the entry
+  // (else no trade on this side today). Cancelled if `stop` trades or the last entry time passes first.
+  // Returns { idx, price } or null.
   function findGapBurst(candles, from, short, stop) {
-    // mirror a short setup so the same "up-burst" logic works for both sides
+    // mirror a short setup so the same BUY logic works for both sides
     const m = short ? (c) => ({ high: -c.low, low: -c.high, close: -c.close, open: -c.open }) : (c) => c;
-    let step = "wait"; // wait -> pullback -> close -> e1 -> e2
+    let step = "wait"; // wait (for a pullback) -> count (closes above the day high)
+    let bursts = 0;
+    let closes = 0;
     let extreme = m(candles[0]).high;
-    let floor = -Infinity; // highest engulf low so far: no candle may trade below it before B1
-    let open = []; // engulf candidates: { r, rHigh, rLow, brokeLow, groupLow }
     let newHigh = false; // a candle traded above the day high since the last pullback
+    let floor = -Infinity; // highest engulf low so far: no candle may trade below it before the entry
+    let open = []; // engulf candidates: { r, rHigh, rLow, brokeLow, groupLow }
     for (let k = 1; k < candles.length; k += 1) {
       const raw = candles[k];
       const c = m(raw);
@@ -663,7 +660,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         if (candleMinute(raw) > state.settings.lastEntry) return null;
         if (short ? raw.high > stop : raw.low < stop) return null;
       }
-      if (c.low < floor) return null; // an engulf level broke before B1: no trade on this side today
+      if (c.low < floor) return null; // an engulf level broke before the entry: no trade on this side today
 
       // engulf: after a red candle R, one or more candles first trade below R's low, then above R's high
       let oneCandleEngulf = false;
@@ -684,25 +681,17 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
         if (step === "wait") {
           // a pullback counts only after a new day high, and a 1-candle engulf is not a pullback
           if (c.low < prev.low && newHigh && !oneCandleEngulf) {
-            step = "pullback";
+            step = "count";
+            closes = 0;
             newHigh = false;
           }
-        } else if (step === "pullback") {
-          if (c.low >= prev.low && c.high > prev.high) step = c.close > extreme ? "e1" : "close";
-        } else if (c.low < prev.low) {
-          // the leg fails: a new pullback only if this leg made a new day high, else wait for one
-          step = newHigh && !oneCandleEngulf ? "pullback" : "wait";
-          newHigh = false;
-        } else if (step === "close") {
-          if (c.close > extreme) step = "e1";
-        } else if (c.high > prev.high) {
-          if (step === "e1") step = "e2";
-          else {
-            const price = Math.max(c.open, prev.high);
-            return { idx: k, price: short ? -price : price };
+        } else if (c.close > extreme) {
+          closes += 1;
+          if (closes === 3) {
+            bursts += 1;
+            if (bursts === 2) return { idx: k, price: short ? -c.close : c.close };
+            step = "wait";
           }
-        } else {
-          step = c.close > extreme ? "e1" : "close";
         }
       }
       if (c.high > extreme) newHigh = true;
@@ -711,10 +700,10 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return null;
   }
 
-  // 9:15 break + B1, any stock, any day (no gap check), both sides: a candle in the break window crosses the
-  // 9:15 candle's low -> wait for a down-burst B1 -> SELL; or crosses its high -> up-burst B1 -> BUY. Trading
+  // 9:15 break + B2, any stock, any day (no gap check), both sides: a candle in the break window crosses the
+  // 9:15 candle's low -> wait for B2 below the day low -> SELL; or crosses its high -> B2 above it -> BUY. Trading
   // through the 9:15 candle's other end before the entry cancels that side; the stop is that other end. When
-  // both sides set up, the one whose B1 completes first is taken (one trade per stock per day).
+  // both sides set up, the one whose B2 completes first is taken (one trade per stock per day).
   function replayGap(stock, session, niftyChangeAt) {
     const { settings } = state;
     const { today } = session;
@@ -750,7 +739,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
     return paperPosition({
       stock,
       session,
-      strategy: best.short ? "B1 SELL" : "B1 BUY",
+      strategy: best.short ? "B2 SELL" : "B2 BUY",
       strategyKey: "gap",
       side,
       entryIdx: best.idx,
@@ -759,7 +748,7 @@ export function createAutoTrader({ kite, withKiteAuth, getInstruments, sendTeleg
       refDistance: c1.high - c1.low,
       stopPrice: best.stopLevel,
       rr: settings.orbRR,
-      reason: [`9:15 ${best.short ? "low" : "high"} broken, B1`, `open ${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(2)}%`, nifty.text].filter(Boolean).join(", "),
+      reason: [`9:15 ${best.short ? "low" : "high"} broken, B2`, `open ${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(2)}%`, nifty.text].filter(Boolean).join(", "),
     });
   }
 

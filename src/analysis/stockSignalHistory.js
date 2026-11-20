@@ -24,7 +24,7 @@ import TwoDayChart from './twoDayChart';
 import DailyHoldChart from './dailyHoldChart';
 
 const STRATEGY_TABS = [
-    { key: 'gap', label: '9:15 break + B1' },
+    { key: 'gap', label: '9:15 break + B2' },
     { key: 'pullback', label: 'Gap + pullback' },
     { key: 'swing', label: '3-burst swing (15 days)' },
 ];
